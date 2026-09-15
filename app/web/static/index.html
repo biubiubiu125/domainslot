@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>yyds邮箱域名监测</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="card login-card">
+      <h1>yyds邮箱域名监测</h1>
+      <p class="muted">输入面板密码后开始看库存、空位和补位日志。</p>
+      <label>面板密码
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">登录</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div>
+        <h1>yyds邮箱域名监测</h1>
+        <p class="muted" id="version-line"></p>
+      </div>
+      <div class="top-actions">
+        <button type="button" id="scan-btn">立即扫描</button>
+        <button type="button" class="ghost" id="logout-btn">退出</button>
+      </div>
+    </header>
+
+    <section id="alerts" class="alerts"></section>
+
+    <section class="stats">
+      <article class="card stat"><span>未使用</span><strong id="stat-unused">0</strong></article>
+      <article class="card stat"><span>已使用</span><strong id="stat-used">0</strong></article>
+      <article class="card stat"><span>异常</span><strong id="stat-error">0</strong></article>
+      <article class="card stat"><span>工作线程</span><strong id="stat-worker">-</strong></article>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div class="card-head">
+          <h2>yyds 账号</h2>
+          <button type="button" data-open="yyds-form">添加账号</button>
+        </div>
+        <p class="muted">只监测和补位。域名删除请去 yyds 官网，这里没有删除按钮。</p>
+        <div id="yyds-list" class="stack"></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <h2>阿里云账号</h2>
+          <button type="button" data-open="aliyun-form">添加账号</button>
+        </div>
+        <p class="muted">域名列表和写解析都会打到域名所属的这一把 AccessKey。</p>
+        <div id="aliyun-list" class="stack"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>域名库存</h2>
+        <div class="filters">
+          <select id="status-filter">
+            <option value="">全部状态</option>
+            <option value="unused">未使用</option>
+            <option value="used">已使用</option>
+            <option value="error">异常</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>域名</th>
+              <th>状态</th>
+              <th>注册时间</th>
+              <th>阿里云</th>
+              <th>yyds</th>
+              <th>说明</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="domain-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>操作日志</h2></div>
+      <div id="event-list" class="log"></div>
+    </section>
+  </div>
+
+  <dialog id="aliyun-form" class="dialog">
+    <form method="dialog" class="dialog-form">
+      <h3 id="aliyun-form-title">添加阿里云账号</h3>
+      <input type="hidden" name="id">
+      <label>名称 <input name="name" required></label>
+      <label>AccessKey ID <input name="access_key_id" required></label>
+      <label>AccessKey Secret <input name="access_key_secret" placeholder="修改时留空表示不改"></label>
+      <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+      <menu>
+        <button type="submit" value="cancel" class="ghost">取消</button>
+        <button type="submit" value="save">保存</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="yyds-form" class="dialog">
+    <form method="dialog" class="dialog-form">
+      <h3 id="yyds-form-title">添加 yyds 账号</h3>
+      <input type="hidden" name="id">
+      <label>名称 <input name="name" required></label>
+      <label>用户名 <input name="username" required></label>
+      <label>密码 <input type="password" name="password" placeholder="修改时留空表示不改"></label>
+      <label>补位顺序 <input type="number" name="sort_order" value="100"></label>
+      <label class="check"><input type="checkbox" name="receive_enabled" checked> 接收新域名</label>
+      <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+      <menu>
+        <button type="submit" value="cancel" class="ghost">取消</button>
+        <button type="submit" value="save">保存</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

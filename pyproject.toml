@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "domainslot"
+version = "0.0.1"
+description = "yyds邮箱域名监测"
+readme = "README.md"
+authors = [{ name = "biubiubiu125" }]
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "sqlalchemy>=2.0.36",
+  "psycopg[binary]>=3.2",
+  "httpx>=0.28",
+  "pydantic-settings>=2.6",
+  "cryptography>=44",
+  "alibabacloud-domain20180129==4.0.0",
+  "alibabacloud-alidns20150109==3.5.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/biubiubiu125/domainslot"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["web/static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
