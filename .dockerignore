@@ -12,6 +12,7 @@ build
 tests
 docs
 .env
+.review-tmp
 *.log
 .idea
 .vscode

@@ -40,7 +40,14 @@ function statusLabel(status) {
 }
 
 function quotaText(used, max) {
-  if (max === null || max === undefined) return `${used} / 不限`;
+  const usedUnknown = used === null || used === undefined || used < 0;
+  if (usedUnknown) {
+    if (max === null || max === undefined) return "未知 / 未知";
+    if (max < 0) return "未知 / 不限";
+    return `未知 / ${max}`;
+  }
+  if (max === null || max === undefined) return `${used} / 未知`;
+  if (max < 0) return `${used} / 不限`;
   return `${used} / ${max}`;
 }
 
@@ -64,9 +71,9 @@ function renderOverview(data) {
     <div class="account">
       <b>${escapeHtml(item.name)}</b>
       <div class="muted">${escapeHtml(item.username)} · 套餐 ${escapeHtml(item.plan_name || "未知")} · 顺序 ${item.sort_order}</div>
-      <div>泛解析 ${quotaText(item.used_wildcard, item.max_wildcard)} ${item.wildcard_full ? "· 已满" : "· 有空位"}</div>
+      <div>泛解析 ${quotaText(item.used_wildcard, item.max_wildcard)} ${item.max_wildcard == null || item.used_wildcard == null || item.used_wildcard < 0 ? "· 配额未知" : (!item.receive_enabled ? "· 接收已关" : (item.wildcard_full ? "· 已满" : "· 有空位"))}</div>
       <div>自定义域名 ${quotaText(item.used_domains, item.max_domains)}</div>
-      <div>接收新域名：${item.receive_enabled ? "开" : "关"} · 登录：${item.login_error ? "失败" : "正常"}</div>
+      <div>接收新域名：${item.receive_enabled ? "开" : "关"} · 登录：${item.login_error ? "失败" : "正常"}${item.throttle_until ? " · 限流中" : ""}</div>
       ${item.login_error ? `<div class="error">${escapeHtml(item.login_error)}</div>` : ""}
       <div class="pills">${(item.domains || []).map((name) => `<span class="pill">${escapeHtml(name)}</span>`).join("") || '<span class="muted">当前没有绑定域名</span>'}</div>
       ${accountButtons("yyds", item)}
@@ -160,6 +167,8 @@ document.body.addEventListener("click", async (event) => {
     const dialog = document.getElementById(openId);
     dialog.querySelector("form").reset();
     dialog.querySelector("[name=id]").value = "";
+    const err = dialog.querySelector("[data-form-error]");
+    if (err) { err.hidden = true; err.textContent = ""; }
     dialog.showModal();
     return;
   }
@@ -201,10 +210,12 @@ function fillForm(id, item) {
   form.elements.id.value = item.id;
   form.elements.name.value = item.name;
   if (form.elements.username) form.elements.username.value = item.username;
-  if (form.elements.access_key_id) form.elements.access_key_id.value = item.access_key_id;
+  if (form.elements.access_key_id) form.elements.access_key_id.value = "";
   if (form.elements.sort_order) form.elements.sort_order.value = item.sort_order;
   if (form.elements.receive_enabled) form.elements.receive_enabled.checked = item.receive_enabled;
   form.elements.enabled.checked = item.enabled;
+  const err = form.querySelector("[data-form-error]");
+  if (err) { err.hidden = true; err.textContent = ""; }
   dialog.showModal();
 }
 
@@ -214,29 +225,47 @@ function bindDialog(id, endpoint) {
     if (event.submitter && event.submitter.value === "cancel") return;
     event.preventDefault();
     const form = event.target;
-    const data = Object.fromEntries(new FormData(form).entries());
-    const payload = {
-      name: data.name,
-      enabled: form.elements.enabled.checked,
-    };
-    if (form.elements.access_key_id) {
-      payload.access_key_id = data.access_key_id;
-      payload.access_key_secret = data.access_key_secret || null;
+    const errorBox = form.querySelector("[data-form-error]");
+    if (errorBox) {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
     }
-    if (form.elements.username) {
-      payload.username = data.username;
-      payload.password = data.password || null;
-      payload.sort_order = Number(data.sort_order || 100);
-      payload.receive_enabled = form.elements.receive_enabled.checked;
+    try {
+      const data = Object.fromEntries(new FormData(form).entries());
+      const accountId = data.id;
+      const payload = {
+        name: data.name,
+        enabled: form.elements.enabled.checked,
+      };
+      if (form.elements.access_key_id) {
+        payload.access_key_id = data.access_key_id || null;
+        payload.access_key_secret = data.access_key_secret || null;
+        if (!accountId && !payload.access_key_id) {
+          throw new Error("请填写 AccessKey ID");
+        }
+      }
+      if (form.elements.username) {
+        payload.username = data.username;
+        payload.password = data.password || null;
+        payload.sort_order = Number(data.sort_order || 100);
+        payload.receive_enabled = form.elements.receive_enabled.checked;
+        if (data.twofa_code && String(data.twofa_code).trim()) {
+          payload.twofa_code = String(data.twofa_code).trim();
+        }
+      }
+      if (accountId) {
+        await api(`${endpoint}/${accountId}`, { method: "PATCH", body: JSON.stringify(payload) });
+      } else {
+        await api(endpoint, { method: "POST", body: JSON.stringify(payload) });
+      }
+      dialog.close();
+      await refresh();
+    } catch (exc) {
+      if (errorBox) {
+        errorBox.hidden = false;
+        errorBox.textContent = exc.message || "保存失败";
+      }
     }
-    const accountId = data.id;
-    if (accountId) {
-      await api(`${endpoint}/${accountId}`, { method: "PATCH", body: JSON.stringify(payload) });
-    } else {
-      await api(endpoint, { method: "POST", body: JSON.stringify(payload) });
-    }
-    dialog.close();
-    await refresh();
   });
 }
 

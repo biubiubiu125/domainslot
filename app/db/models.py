@@ -30,13 +30,15 @@ class AliyunAccount(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(100))
-    access_key_id: Mapped[str] = mapped_column(String(128))
+    access_key_id: Mapped[str] = mapped_column(Text)
     access_key_secret_enc: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     first_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_sync_names: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     throttle_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    throttle_backoff_seconds: Mapped[int] = mapped_column(Integer, default=120)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -51,6 +53,7 @@ class YydsAccount(Base):
     name: Mapped[str] = mapped_column(String(100))
     username: Mapped[str] = mapped_column(String(255))
     password_enc: Mapped[str] = mapped_column(Text)
+    twofa_code_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     cookies_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     access_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=100)
@@ -65,11 +68,17 @@ class YydsAccount(Base):
     last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     first_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    throttle_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    throttle_backoff_seconds: Mapped[int] = mapped_column(Integer, default=120)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     domains: Mapped[list["Domain"]] = relationship(back_populates="yyds_account")
-    snapshot: Mapped["YydsDomainSnapshot | None"] = relationship(back_populates="account", uselist=False)
+    snapshot: Mapped["YydsDomainSnapshot | None"] = relationship(
+        back_populates="account",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class Domain(Base):
@@ -92,9 +101,12 @@ class Domain(Base):
     filling_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     domain_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    audit_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     nameservers: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_on_aliyun_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_on_yyds_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_registrar_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_hold: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

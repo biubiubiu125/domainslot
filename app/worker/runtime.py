@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 
 from app.config import Settings, get_settings
 from app.db.session import get_session, init_db
+from app.worker.events import redact
 from app.worker.fill import fill_available
 from app.worker.poll_aliyun import poll_aliyun_accounts
 from app.worker.poll_yyds import poll_yyds_accounts
@@ -52,38 +52,38 @@ def stop_worker() -> None:
 def _loop() -> None:
     global _last_cycle, _last_error
     settings = get_settings()
-    last_aliyun = 0.0
     while not _stop.is_set():
         forced = _scan.is_set()
         _scan.clear()
         try:
-            _run_cycle(settings, force_aliyun=forced or (time.time() - last_aliyun >= settings.aliyun_poll_seconds))
-            if forced or (time.time() - last_aliyun >= settings.aliyun_poll_seconds):
-                last_aliyun = time.time()
+            _run_cycle(settings, force_all=forced)
             _last_cycle = datetime.now(timezone.utc)
             _last_error = None
         except Exception as exc:  # noqa: BLE001
-            _last_error = str(exc)[:500]
+            _last_error = redact(str(exc))[:500]
             logger.exception("worker cycle failed")
         _scan.wait(timeout=max(5.0, float(settings.yyds_poll_seconds)))
 
 
-def _run_cycle(settings: Settings, force_aliyun: bool) -> None:
+def _run_cycle(settings: Settings, force_all: bool) -> None:
     session = get_session()
     try:
         shrink_ids = poll_yyds_accounts(session, settings)
         session.commit()
-        if force_aliyun:
-            poll_aliyun_accounts(session, settings)
-            session.commit()
-        prefer = shrink_ids[0] if shrink_ids else None
+        poll_aliyun_accounts(session, settings, force=force_all)
+        session.commit()
+        prefer_queue = list(dict.fromkeys(shrink_ids))
         safety = 0
         while safety < 50:
             safety += 1
+            prefer = prefer_queue[0] if prefer_queue else None
             did = fill_available(session, settings, prefer_yyds_id=prefer)
             session.commit()
-            if not did:
-                break
-            prefer = None
+            if did:
+                continue
+            if prefer_queue:
+                prefer_queue.pop(0)
+                continue
+            break
     finally:
         session.close()

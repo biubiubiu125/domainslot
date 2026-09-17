@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -11,15 +12,83 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import __version__
 from app.config import get_settings
-from app.crypto import encrypt_text, hash_password, new_session_token, verify_password
-from app.db.models import AdminAuth, AliyunAccount, Domain, EventLog, YydsAccount
+from app.crypto import encrypt_text, hash_password, new_session_token, reveal_secret, secrets_equal, verify_password
+from app.db.models import AdminAuth, AliyunAccount, Domain, EventLog, YydsAccount, YydsDomainSnapshot
 from app.db.session import db_session
-from app.worker.logic import USER_STATUSES, AccountView, has_wildcard_slot, overview_notice, select_fill_account
+from app.domainutil import display_domain, normalize_domain
+from app.security import LoginGate
+from app.worker.events import redact
+from app.worker.fill import _domain_views
+from app.worker.logic import (
+    ALIYUN_EMPTY_LIST_WARNING,
+    USER_STATUSES,
+    AccountView,
+    has_wildcard_slot,
+    name_in_snapshot_json,
+    occupancy_unknown,
+    overview_notice,
+    select_fill_account,
+    select_unused_domain,
+    status_after_yyds_account_removed,
+    stored_occupancy,
+)
 from app.worker.runtime import request_scan, worker_status
 
 router = APIRouter()
 COOKIE_NAME = "domainslot_session"
+_login_gate = LoginGate()
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def worker_health_view(worker: dict, *, include_error: bool = False) -> dict:
+    view = {
+        "alive": worker.get("alive"),
+        "last_cycle": worker.get("last_cycle"),
+    }
+    if include_error and worker.get("last_error"):
+        view["last_error"] = worker.get("last_error")
+    return view
+
+
+def poll_health_view(session: Session) -> dict:
+    yyds = list(session.scalars(select(YydsAccount)).all())
+    aliyun = list(session.scalars(select(AliyunAccount)).all())
+    now = datetime.now(timezone.utc)
+
+    def still_throttled(until: datetime | None) -> bool:
+        if until is None:
+            return False
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        return until > now
+
+    yyds_ok = [
+        item
+        for item in yyds
+        if item.last_success_at and not item.login_error and not still_throttled(getattr(item, "throttle_until", None))
+    ]
+    aliyun_ok = [
+        item
+        for item in aliyun
+        if item.last_success_at
+        and (not item.last_error or item.last_error == ALIYUN_EMPTY_LIST_WARNING)
+        and not still_throttled(getattr(item, "throttle_until", None))
+    ]
+
+    def oldest(rows: list) -> str | None:
+        times = [item.last_success_at for item in rows if item.last_success_at]
+        if not times:
+            return None
+        return _iso(min(times))
+
+    return {
+        "yyds_total": len(yyds),
+        "yyds_ok": len(yyds_ok),
+        "aliyun_total": len(aliyun),
+        "aliyun_ok": len(aliyun_ok),
+        "oldest_yyds_success_at": oldest(yyds_ok),
+        "oldest_aliyun_success_at": oldest(aliyun_ok),
+    }
 
 
 def get_db():
@@ -49,7 +118,7 @@ def _current_admin(session: Session) -> AdminAuth:
 def require_login(request: Request, session: Session = Depends(get_db)) -> AdminAuth:
     admin = _current_admin(session)
     token = request.cookies.get(COOKIE_NAME)
-    if not token or not admin.session_token or token != admin.session_token:
+    if not token or not admin.session_token or not secrets_equal(token, admin.session_token):
         raise HTTPException(401, "未登录")
     return admin
 
@@ -60,7 +129,7 @@ class LoginBody(BaseModel):
 
 class AliyunBody(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    access_key_id: str = Field(min_length=1, max_length=128)
+    access_key_id: str | None = Field(default=None, max_length=128)
     access_key_secret: str | None = None
     enabled: bool = True
 
@@ -69,6 +138,7 @@ class YydsBody(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     username: str = Field(min_length=1, max_length=255)
     password: str | None = None
+    twofa_code: str | None = Field(default=None, max_length=64)
     sort_order: int = 100
     receive_enabled: bool = True
     enabled: bool = True
@@ -79,18 +149,30 @@ class DomainStatusBody(BaseModel):
 
 
 @router.post("/api/login")
-def login(body: LoginBody, response: Response, session: Session = Depends(get_db)):
+def login(body: LoginBody, request: Request, response: Response, session: Session = Depends(get_db)):
+    ip = request.client.host if request.client else "unknown"
+    if not _login_gate.allow(ip):
+        raise HTTPException(429, "登录失败次数过多，请稍后再试")
     admin = _current_admin(session)
     settings = get_settings()
     ok = verify_password(body.password, admin.password_hash)
-    if not ok and settings.panel_password and body.password == settings.panel_password:
+    if not ok and settings.panel_password and secrets_equal(body.password, settings.panel_password):
         admin.password_hash = hash_password(body.password)
         ok = True
     if not ok:
+        _login_gate.fail(ip)
         raise HTTPException(401, "密码错误")
+    _login_gate.success(ip)
     token = new_session_token()
     admin.session_token = token
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 14)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.panel_cookie_secure,
+        max_age=60 * 60 * 24 * 14,
+    )
     return {"ok": True}
 
 
@@ -101,8 +183,21 @@ def logout(response: Response, session: Session = Depends(get_db), admin: AdminA
     return {"ok": True}
 
 
+@router.get("/api/healthz")
+def healthz(session: Session = Depends(get_db)):
+    session.execute(text("SELECT 1"))
+    worker = worker_status()
+    if worker.get("alive") != "yes":
+        raise HTTPException(status_code=503, detail="worker not alive")
+    return {
+        "ok": True,
+        "worker": worker_health_view(worker),
+        "poll": poll_health_view(session),
+    }
+
+
 @router.get("/api/health")
-def health(session: Session = Depends(get_db)):
+def health(session: Session = Depends(get_db), _: AdminAuth = Depends(require_login)):
     db_ok = True
     try:
         session.execute(text("SELECT 1"))
@@ -113,7 +208,8 @@ def health(session: Session = Depends(get_db)):
         "ok": db_ok and worker.get("alive") == "yes",
         "version": __version__,
         "db": db_ok,
-        "worker": worker,
+        "worker": worker_health_view(worker),
+        "poll": poll_health_view(session),
     }
 
 
@@ -124,37 +220,68 @@ def overview(session: Session = Depends(get_db), _: AdminAuth = Depends(require_
     error = session.scalar(select(func.count()).select_from(Domain).where(Domain.status == "error")) or 0
     yyds_accounts = list(session.scalars(select(YydsAccount).order_by(YydsAccount.sort_order)).all())
     aliyun_accounts = list(session.scalars(select(AliyunAccount).order_by(AliyunAccount.created_at)).all())
+    now = datetime.now(timezone.utc)
+
+    def _still_throttled(until: datetime | None) -> bool:
+        if until is None:
+            return False
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        return until > now
+
     views = [
         AccountView(
             id=str(item.id),
             sort_order=item.sort_order,
             receive_enabled=item.receive_enabled,
             enabled=item.enabled,
-            login_ok=not item.login_error,
+            login_ok=not item.login_error and not _still_throttled(getattr(item, "throttle_until", None)),
             max_wildcard=item.max_wildcard,
-            used_wildcard=item.used_wildcard or 0,
+            used_wildcard=stored_occupancy(item.used_wildcard),
+            max_domains=item.max_domains,
+            used_domains=stored_occupancy(item.used_domains),
         )
         for item in yyds_accounts
     ]
     fillable = select_fill_account(views) is not None
+    inventory_ready = select_unused_domain(_domain_views(session)) is not None
+    quota_unknown = (not fillable) and any(
+        item.enabled
+        and item.receive_enabled
+        and not item.login_error
+        and not _still_throttled(getattr(item, "throttle_until", None))
+        and (
+            occupancy_unknown(item.max_wildcard, item.used_wildcard)
+            or occupancy_unknown(item.max_domains, item.used_domains)
+        )
+        for item in yyds_accounts
+    )
     alerts: list[str] = []
-    notice = overview_notice(int(unused), fillable)
+    notice = overview_notice(
+        int(unused),
+        fillable,
+        quota_unknown=quota_unknown,
+        inventory_ready=inventory_ready,
+    )
     if notice:
         alerts.append(notice)
     for item in yyds_accounts:
         if item.login_error:
             alerts.append(f"yyds 账号 {item.name} 登录失败")
-    now = datetime.now(timezone.utc)
+        if _still_throttled(getattr(item, "throttle_until", None)):
+            alerts.append(f"yyds 账号 {item.name} 正在限流")
     for item in aliyun_accounts:
-        if item.last_error:
-            alerts.append(f"阿里云账号 {item.name}：{item.last_error}")
+        if item.last_error and item.last_error != ALIYUN_EMPTY_LIST_WARNING:
+            alerts.append(f"阿里云账号 {item.name}：{redact(item.last_error)}")
         throttle_until = item.throttle_until
         if throttle_until is not None and throttle_until.tzinfo is None:
             throttle_until = throttle_until.replace(tzinfo=timezone.utc)
         if throttle_until and throttle_until > now:
             alerts.append(f"阿里云账号 {item.name} 正在限流")
     last_event = session.scalar(select(EventLog).order_by(EventLog.created_at.desc()).limit(1))
-    worker = worker_status()
+    worker = worker_health_view(worker_status(), include_error=True)
+    if worker.get("last_error"):
+        alerts.append(f"工作线程上一轮失败：{worker['last_error']}")
     return {
         "version": __version__,
         "unused": unused,
@@ -176,12 +303,13 @@ def list_aliyun(session: Session = Depends(get_db), _: AdminAuth = Depends(requi
 
 @router.post("/api/aliyun-accounts")
 def create_aliyun(body: AliyunBody, session: Session = Depends(get_db), _: AdminAuth = Depends(require_login)):
-    if not body.access_key_secret:
-        raise HTTPException(400, "请填写 AccessKey Secret")
+    access_key_id = (body.access_key_id or "").strip()
+    if not access_key_id or not body.access_key_secret:
+        raise HTTPException(400, "请填写 AccessKey ID 和 Secret")
     settings = get_settings()
     row = AliyunAccount(
         name=body.name.strip(),
-        access_key_id=body.access_key_id.strip(),
+        access_key_id=encrypt_text(settings.secret_key, access_key_id),
         access_key_secret_enc=encrypt_text(settings.secret_key, body.access_key_secret.strip()),
         enabled=body.enabled,
     )
@@ -197,10 +325,13 @@ def update_aliyun(account_id: UUID, body: AliyunBody, session: Session = Depends
     if row is None:
         raise HTTPException(404, "阿里云账号不存在")
     row.name = body.name.strip()
-    row.access_key_id = body.access_key_id.strip()
+    access_key_id = (body.access_key_id or "").strip()
+    if access_key_id and "****" not in access_key_id:
+        row.access_key_id = encrypt_text(get_settings().secret_key, access_key_id)
     row.enabled = body.enabled
     if body.access_key_secret:
         row.access_key_secret_enc = encrypt_text(get_settings().secret_key, body.access_key_secret.strip())
+    request_scan()
     return _aliyun_dict(row)
 
 
@@ -210,6 +341,7 @@ def delete_aliyun(account_id: UUID, session: Session = Depends(get_db), _: Admin
     if row is None:
         raise HTTPException(404, "阿里云账号不存在")
     session.delete(row)
+    request_scan()
     return {"ok": True}
 
 
@@ -228,6 +360,7 @@ def create_yyds(body: YydsBody, session: Session = Depends(get_db), _: AdminAuth
         name=body.name.strip(),
         username=body.username.strip(),
         password_enc=encrypt_text(settings.secret_key, body.password),
+        twofa_code_enc=_encrypt_twofa(settings.secret_key, body.twofa_code),
         sort_order=body.sort_order,
         receive_enabled=body.receive_enabled,
         enabled=body.enabled,
@@ -253,6 +386,8 @@ def update_yyds(account_id: UUID, body: YydsBody, session: Session = Depends(get
         row.cookies_enc = None
         row.access_token_enc = None
         row.login_error = None
+    if body.twofa_code is not None:
+        row.twofa_code_enc = _encrypt_twofa(get_settings().secret_key, body.twofa_code)
     request_scan()
     return _yyds_dict(row)
 
@@ -262,7 +397,16 @@ def delete_yyds(account_id: UUID, session: Session = Depends(get_db), _: AdminAu
     row = session.get(YydsAccount, account_id)
     if row is None:
         raise HTTPException(404, "yyds 账号不存在")
+    now = datetime.now(timezone.utc)
+    domains = list(session.scalars(select(Domain).where(Domain.yyds_account_id == account_id)).all())
+    for domain in domains:
+        domain.status = status_after_yyds_account_removed(domain.status, domain.yyds_domain_id)
+        if domain.yyds_domain_id:
+            domain.error_reason = None
+        domain.filling_at = None
+        domain.updated_at = now
     session.delete(row)
+    request_scan()
     return {"ok": True}
 
 
@@ -287,6 +431,14 @@ def update_domain(domain_id: UUID, body: DomainStatusBody, session: Session = De
     if body.status != "error":
         row.error_reason = None
     row.filling_at = None
+    if body.status == "unused":
+        occupied = any(
+            name_in_snapshot_json(snap.names_json, row.name)
+            for snap in session.scalars(select(YydsDomainSnapshot)).all()
+        )
+        if not occupied:
+            row.yyds_account_id = None
+            row.yyds_domain_id = None
     request_scan()
     return _domain_dict(row)
 
@@ -304,24 +456,51 @@ def scan(_: AdminAuth = Depends(require_login)):
 
 
 def _aliyun_dict(item: AliyunAccount) -> dict:
-    key = item.access_key_id
+    key = reveal_secret(get_settings().secret_key, item.access_key_id)
     masked = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+    last_error = redact(item.last_error) if item.last_error else None
+    if last_error == ALIYUN_EMPTY_LIST_WARNING:
+        last_error = None
     return {
         "id": str(item.id),
         "name": item.name,
-        "access_key_id": key,
         "access_key_id_masked": masked,
         "enabled": item.enabled,
         "first_synced_at": _iso(item.first_synced_at),
         "last_poll_at": _iso(item.last_poll_at),
         "last_success_at": _iso(item.last_success_at),
         "throttle_until": _iso(item.throttle_until),
-        "last_error": item.last_error,
+        "last_error": last_error,
     }
 
 
+def _panel_used(value: int | None, last_success_at: datetime | None) -> int | None:
+    if value is None:
+        return None
+    used = int(value)
+    if used < 0:
+        return used
+    if last_success_at is None:
+        return None
+    return used
+
+
+def _encrypt_twofa(secret_key: str, value: str | None) -> str | None:
+    code = (value or "").strip()
+    if not code:
+        return None
+    return encrypt_text(secret_key, code)
+
+
 def _yyds_dict(item: YydsAccount, include_domains: bool = False, session: Session | None = None) -> dict:
-    full = has_wildcard_slot(item.max_wildcard, item.used_wildcard or 0) is False
+    used_wildcard = _panel_used(item.used_wildcard, item.last_success_at)
+    used_domains = _panel_used(item.used_domains, item.last_success_at)
+    full = (
+        item.max_wildcard is not None
+        and used_wildcard is not None
+        and used_wildcard >= 0
+        and has_wildcard_slot(item.max_wildcard, used_wildcard) is False
+    )
     data = {
         "id": str(item.id),
         "name": item.name,
@@ -329,20 +508,37 @@ def _yyds_dict(item: YydsAccount, include_domains: bool = False, session: Sessio
         "sort_order": item.sort_order,
         "receive_enabled": item.receive_enabled,
         "enabled": item.enabled,
-        "login_error": item.login_error,
+        "login_error": redact(item.login_error) if item.login_error else None,
         "plan_name": item.plan_name,
         "max_wildcard": item.max_wildcard,
-        "used_wildcard": item.used_wildcard,
+        "used_wildcard": used_wildcard,
         "max_domains": item.max_domains,
-        "used_domains": item.used_domains,
+        "used_domains": used_domains,
         "wildcard_full": full,
         "last_poll_at": _iso(item.last_poll_at),
         "last_success_at": _iso(item.last_success_at),
+        "throttle_until": _iso(getattr(item, "throttle_until", None)),
         "domains": [],
     }
     if include_domains and session is not None:
-        names = session.scalars(select(Domain.name).where(Domain.yyds_account_id == item.id).order_by(Domain.name)).all()
-        data["domains"] = list(names)
+        snap = session.scalar(select(YydsDomainSnapshot).where(YydsDomainSnapshot.yyds_account_id == item.id))
+        names: list[str] = []
+        if snap and snap.names_json:
+            try:
+                loaded = json.loads(snap.names_json)
+            except json.JSONDecodeError:
+                loaded = []
+            if isinstance(loaded, list):
+                for raw in loaded:
+                    text = str(raw or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        ascii_name = normalize_domain(text)
+                    except ValueError:
+                        ascii_name = text.rstrip(".").lower()
+                    names.append(display_domain(ascii_name))
+        data["domains"] = sorted(set(names))
     return data
 
 
@@ -354,7 +550,7 @@ def _domain_dict(item: Domain) -> dict:
         "status": item.status,
         "from_first_snapshot": item.from_first_snapshot,
         "registration_at": _iso(item.registration_at),
-        "error_reason": item.error_reason,
+        "error_reason": redact(item.error_reason) if item.error_reason else None,
         "aliyun_account_id": str(item.aliyun_account_id) if item.aliyun_account_id else None,
         "aliyun_account_name": item.aliyun_account.name if item.aliyun_account else None,
         "yyds_account_id": str(item.yyds_account_id) if item.yyds_account_id else None,

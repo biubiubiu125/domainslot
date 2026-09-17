@@ -100,9 +100,10 @@
       <h3 id="aliyun-form-title">添加阿里云账号</h3>
       <input type="hidden" name="id">
       <label>名称 <input name="name" required></label>
-      <label>AccessKey ID <input name="access_key_id" required></label>
+      <label>AccessKey ID <input name="access_key_id" placeholder="修改时留空表示不改"></label>
       <label>AccessKey Secret <input name="access_key_secret" placeholder="修改时留空表示不改"></label>
       <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+      <p class="error" data-form-error hidden></p>
       <menu>
         <button type="submit" value="cancel" class="ghost">取消</button>
         <button type="submit" value="save">保存</button>
@@ -117,9 +118,11 @@
       <label>名称 <input name="name" required></label>
       <label>用户名 <input name="username" required></label>
       <label>密码 <input type="password" name="password" placeholder="修改时留空表示不改"></label>
+      <label>一次性二验码（可选） <input name="twofa_code" autocomplete="one-time-code" placeholder="账号开了 2FA 时再填，用一次就清"></label>
       <label>补位顺序 <input type="number" name="sort_order" value="100"></label>
       <label class="check"><input type="checkbox" name="receive_enabled" checked> 接收新域名</label>
       <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+      <p class="error" data-form-error hidden></p>
       <menu>
         <button type="submit" value="cancel" class="ghost">取消</button>
         <button type="submit" value="save">保存</button>

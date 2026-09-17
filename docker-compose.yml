@@ -24,10 +24,16 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://domainslot:domainslot@db:5432/domainslot
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://domainslot:domainslot@db:5432/domainslot}
       TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:8788:8788"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/healthz', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
     restart: unless-stopped
 
 volumes:
