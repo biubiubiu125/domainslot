@@ -153,22 +153,19 @@ def _mark_unlisted_inventory(session: Session, account: AliyunAccount, listed_na
     for row in rows:
         if row.name in listed_names:
             continue
-        if row.yyds_account_id is not None:
+        if row.yyds_account_id is not None or row.yyds_domain_id:
             continue
-        already = row.status == STATUS_ERROR and row.error_reason == "阿里云列表中已不存在"
-        row.status = STATUS_ERROR
-        row.error_reason = "阿里云列表中已不存在"
-        row.filling_at = None
-        if already:
+        if row.filling_at is not None:
             continue
         add_event(
             session,
-            level="warning",
+            level="info",
             code="aliyun_missing",
-            message=f"{row.name} 已不在阿里云账号 {account.name} 的列表中",
+            message=f"{row.name} 已不在阿里云账号 {account.name} 的列表中，已从库存删除",
             domain_name=row.name,
             aliyun_account_id=account.id,
         )
+        session.delete(row)
 
 
 def poll_one_aliyun_account(session: Session, settings: Settings, account: AliyunAccount) -> int:

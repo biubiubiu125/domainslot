@@ -136,12 +136,16 @@ def _is_auth_expired(exc: YydsError) -> bool:
     return exc.status_code == 401
 
 
-def _is_wildcard_rule_state_required(exc: YydsError) -> bool:
+def _wildcard_error_blob(exc: YydsError) -> str:
     parts = [str(exc), str(exc.code or "")]
     payload = exc.payload
     if isinstance(payload, dict):
         parts.extend(str(payload.get(key) or "") for key in ("errorCode", "error", "code"))
-    return "wildcard_rule_state_required" in " ".join(parts).lower()
+    return " ".join(parts).lower()
+
+
+def _is_wildcard_rule_invalid_body(exc: YydsError) -> bool:
+    return "invalid_request_body" in _wildcard_error_blob(exc)
 
 
 def assert_list_complete(payload: Any) -> None:
@@ -683,20 +687,20 @@ class YydsClient:
         return False
 
     def _set_wildcard_rule_active(self, domain_id: str, rule_id: str) -> None:
-        # OpenAPI 这条 PATCH 没有 requestBody。生产上 JSON {"state":"active"}
-        # 会 400 wildcard_rule_state_required，说明服务端没从 JSON 读到 state，
-        # 不再拿这个已知失败体去打 4xx。先 query，再 form；PATCH 200 仍以 GET 为准。
+        # 生产对照：JSON-only {"state":"active"} -> wildcard_rule_state_required
+        # query-only 无 body -> invalid_request_body。state 走 query，同时必须带 JSON body。
+        # body 被拒时再试空对象；PATCH 200 仍以 GET 为准。
         path = f"me/domains/{domain_id}/wildcard-rules/{rule_id}"
         last_error: YydsError | None = None
         saw_accepted = False
         for kwargs in (
-            {"params": {"state": "active"}},
-            {"data": {"state": "active"}},
+            {"params": {"state": "active"}, "json": {"state": "active"}},
+            {"params": {"state": "active"}, "json": {}},
         ):
             try:
                 self.request("PATCH", path, **kwargs)
             except YydsError as exc:
-                if not _is_wildcard_rule_state_required(exc):
+                if not _is_wildcard_rule_invalid_body(exc):
                     raise
                 last_error = exc
                 continue

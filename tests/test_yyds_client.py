@@ -263,20 +263,28 @@ def test_ensure_wildcard_409_with_existing_rule_ok():
     assert gets["n"] >= 2
 
 
-def _state_required() -> YydsError:
+def _invalid_body() -> YydsError:
     return YydsError(
-        "wildcard_rule_state_required HTTP 400",
+        "invalid_request_body HTTP 400",
         400,
-        {"success": False, "errorCode": "wildcard_rule_state_required"},
+        {"success": False, "errorCode": "invalid_request_body"},
     )
 
 
-def _patch_kwargs_are_query_state(kwargs: dict) -> bool:
-    return kwargs.get("params") == {"state": "active"} and "json" not in kwargs and "data" not in kwargs
+def _patch_kwargs_are_query_and_json_state(kwargs: dict) -> bool:
+    return (
+        kwargs.get("params") == {"state": "active"}
+        and kwargs.get("json") == {"state": "active"}
+        and "data" not in kwargs
+    )
 
 
-def _patch_kwargs_are_form_state(kwargs: dict) -> bool:
-    return kwargs.get("data") == {"state": "active"} and "json" not in kwargs and "params" not in kwargs
+def _patch_kwargs_are_query_and_empty_json(kwargs: dict) -> bool:
+    return (
+        kwargs.get("params") == {"state": "active"}
+        and kwargs.get("json") == {}
+        and "data" not in kwargs
+    )
 
 
 def test_enable_wildcard_rules_patches_active_state():
@@ -289,8 +297,8 @@ def test_enable_wildcard_rules_patches_active_state():
         if method == "GET" and path == "me/domains/yd1/wildcard-rules":
             return [{"id": "r1", "state": state["value"], "pattern": "*.a.com"}]
         if method == "PATCH" and path == "me/domains/yd1/wildcard-rules/r1":
-            if not _patch_kwargs_are_query_state(kwargs):
-                raise AssertionError("OpenAPI PATCH wildcard-rules has no requestBody; send state as query")
+            if not _patch_kwargs_are_query_and_json_state(kwargs):
+                raise AssertionError("send state as query and JSON body together")
             state["value"] = "active"
             return None
         raise AssertionError((method, path, kwargs))
@@ -305,7 +313,7 @@ def test_enable_wildcard_rules_patches_active_state():
         ("PATCH", "me/domains/yd1/wildcard-rules/r1"),
         ("GET", "me/domains/yd1/wildcard-rules"),
     ]
-    assert _patch_kwargs_are_query_state(calls[1][2])
+    assert _patch_kwargs_are_query_and_json_state(calls[1][2])
 
 
 def test_enable_wildcard_rules_skips_already_active():
@@ -342,7 +350,7 @@ def test_enable_wildcard_rules_creates_draft_then_enables():
             created["done"] = True
             return {"id": "r1", "state": "draft"}
         if method == "PATCH" and path == "me/domains/yd1/wildcard-rules/r1":
-            if not _patch_kwargs_are_query_state(kwargs):
+            if not _patch_kwargs_are_query_and_json_state(kwargs):
                 raise AssertionError((method, path, kwargs))
             state["value"] = "active"
             return None
@@ -361,7 +369,7 @@ def test_enable_wildcard_rules_creates_draft_then_enables():
         ("GET", "me/domains/yd1/wildcard-rules"),
     ]
     assert "json" not in calls[1][2]
-    assert _patch_kwargs_are_query_state(calls[3][2])
+    assert _patch_kwargs_are_query_and_json_state(calls[3][2])
 
 
 def test_enable_wildcard_rules_enables_paused():
@@ -374,7 +382,7 @@ def test_enable_wildcard_rules_enables_paused():
         if method == "GET":
             return [{"id": "r1", "state": state["value"], "pauseReason": "user_paused"}]
         if method == "PATCH":
-            if not _patch_kwargs_are_query_state(kwargs):
+            if not _patch_kwargs_are_query_and_json_state(kwargs):
                 raise AssertionError((method, path, kwargs))
             state["value"] = "active"
             return None
@@ -390,35 +398,10 @@ def test_enable_wildcard_rules_enables_paused():
         ("PATCH", "me/domains/yd1/wildcard-rules/r1"),
         ("GET", "me/domains/yd1/wildcard-rules"),
     ]
-    assert _patch_kwargs_are_query_state(calls[1][2])
+    assert _patch_kwargs_are_query_and_json_state(calls[1][2])
 
 
-def test_enable_wildcard_rules_does_not_retry_json_body():
-    client = _client()
-    calls: list[tuple[str, str, dict]] = []
-
-    def fake_request(method: str, path: str, **kwargs):
-        calls.append((method, path, kwargs))
-        if method == "GET":
-            return [{"id": "r1", "state": "draft", "pattern": "*.a.com"}]
-        if method == "PATCH" and _patch_kwargs_are_query_state(kwargs):
-            raise _state_required()
-        if method == "PATCH" and kwargs.get("json") == {"state": "active"}:
-            return {"id": "r1", "state": "active"}
-        if method == "PATCH" and _patch_kwargs_are_form_state(kwargs):
-            raise _state_required()
-        raise AssertionError((method, path, kwargs))
-
-    try:
-        client.request = fake_request  # type: ignore[method-assign]
-        with pytest.raises(YydsError, match="wildcard_rule_state_required"):
-            client.enable_wildcard_rules("yd1")
-    finally:
-        client.close()
-    assert not any("json" in item[2] for item in calls if item[0] == "PATCH")
-
-
-def test_enable_wildcard_rules_falls_back_to_form_when_query_state_missing():
+def test_enable_wildcard_rules_falls_back_to_empty_json_when_body_invalid():
     client = _client()
     calls: list[tuple[str, str, dict]] = []
     state = {"value": "draft"}
@@ -427,11 +410,9 @@ def test_enable_wildcard_rules_falls_back_to_form_when_query_state_missing():
         calls.append((method, path, kwargs))
         if method == "GET":
             return [{"id": "r1", "state": state["value"], "pattern": "*.a.com"}]
-        if method == "PATCH" and _patch_kwargs_are_query_state(kwargs):
-            raise _state_required()
-        if method == "PATCH" and "json" in kwargs:
-            raise AssertionError("JSON {state:active} already 400 on production; do not retry it")
-        if method == "PATCH" and _patch_kwargs_are_form_state(kwargs):
+        if method == "PATCH" and _patch_kwargs_are_query_and_json_state(kwargs):
+            raise _invalid_body()
+        if method == "PATCH" and _patch_kwargs_are_query_and_empty_json(kwargs):
             state["value"] = "active"
             return None
         raise AssertionError((method, path, kwargs))
@@ -442,12 +423,12 @@ def test_enable_wildcard_rules_falls_back_to_form_when_query_state_missing():
     finally:
         client.close()
     patch_calls = [item for item in calls if item[0] == "PATCH"]
-    assert [_patch_kwargs_are_query_state(item[2]) for item in patch_calls] == [True, False]
-    assert _patch_kwargs_are_form_state(patch_calls[1][2])
+    assert [_patch_kwargs_are_query_and_json_state(item[2]) for item in patch_calls] == [True, False]
+    assert _patch_kwargs_are_query_and_empty_json(patch_calls[1][2])
     assert calls[-1][:2] == ("GET", "me/domains/yd1/wildcard-rules")
 
 
-def test_enable_wildcard_rules_retries_form_when_query_patch_does_not_activate():
+def test_enable_wildcard_rules_retries_empty_json_when_combined_patch_does_not_activate():
     client = _client()
     calls: list[tuple[str, str, dict]] = []
     state = {"value": "draft"}
@@ -456,11 +437,9 @@ def test_enable_wildcard_rules_retries_form_when_query_patch_does_not_activate()
         calls.append((method, path, kwargs))
         if method == "GET":
             return [{"id": "r1", "state": state["value"], "pattern": "*.a.com"}]
-        if method == "PATCH" and _patch_kwargs_are_query_state(kwargs):
+        if method == "PATCH" and _patch_kwargs_are_query_and_json_state(kwargs):
             return None
-        if method == "PATCH" and "json" in kwargs:
-            raise AssertionError("do not retry JSON body")
-        if method == "PATCH" and _patch_kwargs_are_form_state(kwargs):
+        if method == "PATCH" and _patch_kwargs_are_query_and_empty_json(kwargs):
             state["value"] = "active"
             return None
         raise AssertionError((method, path, kwargs))
@@ -472,8 +451,8 @@ def test_enable_wildcard_rules_retries_form_when_query_patch_does_not_activate()
         client.close()
     patch_calls = [item for item in calls if item[0] == "PATCH"]
     assert len(patch_calls) == 2
-    assert _patch_kwargs_are_query_state(patch_calls[0][2])
-    assert _patch_kwargs_are_form_state(patch_calls[1][2])
+    assert _patch_kwargs_are_query_and_json_state(patch_calls[0][2])
+    assert _patch_kwargs_are_query_and_empty_json(patch_calls[1][2])
 
 
 def test_enable_wildcard_rules_raises_if_rule_stays_inactive():
@@ -518,7 +497,7 @@ def test_enable_wildcard_rules_does_not_fallback_on_mx_not_ready():
         client.close()
     patch_calls = [item for item in calls if item[0] == "PATCH"]
     assert len(patch_calls) == 1
-    assert _patch_kwargs_are_query_state(patch_calls[0][2])
+    assert _patch_kwargs_are_query_and_json_state(patch_calls[0][2])
 
 
 def test_enable_wildcard_rules_sends_state_query_on_the_wire():
@@ -555,7 +534,8 @@ def test_enable_wildcard_rules_sends_state_query_on_the_wire():
         client.close()
     patch = next(item for item in captured if item.method == "PATCH")
     assert patch.url.params.get("state") == "active"
-    assert not patch.content
+    assert json.loads(patch.content) == {"state": "active"}
+    assert (patch.headers.get("content-type") or "").startswith("application/json")
     rule_gets = [item for item in captured if item.method == "GET" and item.url.path.endswith("/wildcard-rules")]
     assert len(rule_gets) == 2
 

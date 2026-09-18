@@ -1062,7 +1062,7 @@ def test_used_bound_live_nonaudit_marks_error(db_session, settings, monkeypatch)
     assert row.yyds_domain_id == "yd1"
 
 
-def test_unused_missing_from_nonempty_list_marks_error(db_session, settings, monkeypatch):
+def test_unused_missing_from_nonempty_list_is_deleted(db_session, settings, monkeypatch):
     from sqlalchemy import select
 
     now = datetime.now(timezone.utc)
@@ -1115,14 +1115,128 @@ def test_unused_missing_from_nonempty_list_marks_error(db_session, settings, mon
     poll_one_aliyun_account(db_session, settings, account)
     db_session.commit()
     db_session.refresh(kept)
-    db_session.refresh(gone)
     names = {row.name for row in db_session.scalars(select(Domain)).all()}
     codes = [item.code for item in db_session.scalars(select(EventLog)).all()]
-    assert "gone.com" in names
+    assert "gone.com" not in names
     assert kept.status == STATUS_UNUSED
-    assert gone.status == STATUS_ERROR
-    assert "不存在" in (gone.error_reason or "")
     assert "aliyun_missing" in codes
+
+
+def test_used_unbound_missing_from_nonempty_list_is_deleted(db_session, settings, monkeypatch):
+    from sqlalchemy import select
+
+    now = datetime.now(timezone.utc)
+    account = AliyunAccount(
+        name="ak1",
+        access_key_id="LTAIxxxx",
+        access_key_secret_enc="enc",
+        enabled=True,
+        first_synced_at=now,
+    )
+    db_session.add(account)
+    db_session.flush()
+    kept = Domain(
+        name="keep.com",
+        display_name="keep.com",
+        aliyun_account_id=account.id,
+        status=STATUS_UNUSED,
+        nameservers="dns9.hichina.com",
+    )
+    gone = Domain(
+        name="gone.com",
+        display_name="gone.com",
+        aliyun_account_id=account.id,
+        status=STATUS_USED,
+        nameservers="dns9.hichina.com",
+    )
+    db_session.add_all([kept, gone])
+    db_session.commit()
+
+    class FakeClient:
+        def list_domains(self):
+            return [
+                AliyunDomain(
+                    name="keep.com",
+                    domain_status="3",
+                    audit_status="SUCCEED",
+                    nameservers=["dns9.hichina.com"],
+                )
+            ]
+
+        def describe_registrar_domain(self, name: str):
+            return AliyunDomain(
+                name=name,
+                domain_status="3",
+                audit_status="SUCCEED",
+                nameservers=["dns9.hichina.com"],
+            )
+
+    monkeypatch.setattr("app.worker.poll_aliyun.aliyun_client", lambda _settings, _account: FakeClient())
+    poll_one_aliyun_account(db_session, settings, account)
+    db_session.commit()
+    names = {row.name for row in db_session.scalars(select(Domain)).all()}
+    assert "gone.com" not in names
+    assert "keep.com" in names
+
+
+def test_filling_unbound_missing_from_nonempty_list_is_kept(db_session, settings, monkeypatch):
+    from sqlalchemy import select
+
+    now = datetime.now(timezone.utc)
+    account = AliyunAccount(
+        name="ak1",
+        access_key_id="LTAIxxxx",
+        access_key_secret_enc="enc",
+        enabled=True,
+        first_synced_at=now,
+    )
+    db_session.add(account)
+    db_session.flush()
+    filling = Domain(
+        name="filling.com",
+        display_name="filling.com",
+        aliyun_account_id=account.id,
+        status=STATUS_UNUSED,
+        filling_at=now,
+        nameservers="dns9.hichina.com",
+    )
+    kept = Domain(
+        name="keep.com",
+        display_name="keep.com",
+        aliyun_account_id=account.id,
+        status=STATUS_UNUSED,
+        nameservers="dns9.hichina.com",
+    )
+    db_session.add_all([filling, kept])
+    db_session.commit()
+
+    class FakeClient:
+        def list_domains(self):
+            return [
+                AliyunDomain(
+                    name="keep.com",
+                    domain_status="3",
+                    audit_status="SUCCEED",
+                    nameservers=["dns9.hichina.com"],
+                )
+            ]
+
+        def describe_registrar_domain(self, name: str):
+            return AliyunDomain(
+                name=name,
+                domain_status="3",
+                audit_status="SUCCEED",
+                nameservers=["dns9.hichina.com"],
+            )
+
+    monkeypatch.setattr("app.worker.poll_aliyun.aliyun_client", lambda _settings, _account: FakeClient())
+    poll_one_aliyun_account(db_session, settings, account)
+    db_session.commit()
+    names = {row.name for row in db_session.scalars(select(Domain)).all()}
+    db_session.refresh(filling)
+    assert "filling.com" in names
+    assert filling.status == STATUS_UNUSED
+    assert filling.filling_at is not None
 
 
 def test_used_bound_missing_from_nonempty_list_stays_used(db_session, settings, monkeypatch):
