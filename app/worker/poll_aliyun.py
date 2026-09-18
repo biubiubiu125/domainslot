@@ -18,6 +18,7 @@ from app.worker.logic import (
     STATUS_UNUSED,
     STATUS_USED,
     aliyun_account_due,
+    aliyun_readiness_error,
     aliyun_throttle_backoff,
     assign_discovered_status,
     discovered_from_first_snapshot,
@@ -341,7 +342,12 @@ def poll_one_aliyun_account(session: Session, settings: Settings, account: Aliyu
             if not ready and punish_not_ready:
                 row.status = STATUS_ERROR
                 row.error_reason = reason
-            elif ready and row.status == STATUS_ERROR and row.yyds_account_id is None:
+            elif (
+                ready
+                and row.status == STATUS_ERROR
+                and row.yyds_account_id is None
+                and aliyun_readiness_error(row.error_reason)
+            ):
                 if row.from_first_snapshot or row.last_seen_on_yyds_at is not None:
                     row.status = STATUS_USED
                 else:

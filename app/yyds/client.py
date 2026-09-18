@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -319,6 +319,33 @@ def find_listed_domain(items: list[YydsDomain], name: str) -> YydsDomain | None:
     return None
 
 
+_OFFICIAL_CONSOLE_ORIGINS = {
+    "maliapi.215.im": "https://vip.215.im",
+}
+
+
+def request_origin(api_base: str) -> str:
+    raw = (api_base or "").strip()
+    if raw and "://" not in raw:
+        raw = "https://" + raw
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if host in _OFFICIAL_CONSOLE_ORIGINS:
+        return _OFFICIAL_CONSOLE_ORIGINS[host]
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    return ""
+
+
+def default_http_headers(api_base: str) -> dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "domainslot/0.0.1"}
+    origin = request_origin(api_base)
+    if origin:
+        headers["Origin"] = origin
+        headers["Referer"] = origin.rstrip("/") + "/"
+    return headers
+
+
 class YydsClient:
     def __init__(
         self,
@@ -345,7 +372,7 @@ class YydsClient:
         self.http = httpx.Client(
             base_url=self.api_base,
             timeout=timeout,
-            headers={"Accept": "application/json", "User-Agent": "domainslot/0.0.1"},
+            headers=default_http_headers(self.api_base),
             follow_redirects=True,
         )
         if cookies:
@@ -396,7 +423,7 @@ class YydsClient:
                 body["twofaCode"] = self.twofa_code
             if self.turnstile_token:
                 body["turnstileToken"] = self.turnstile_token
-            response = self.http.post("auth/login", json=body)
+            response = self.http.post("auth/login", json=body, headers=self._outgoing_headers())
             payload = self._decode(response)
             try:
                 if response.status_code >= 400:
@@ -415,7 +442,7 @@ class YydsClient:
 
     def refresh(self) -> None:
         with account_session_lock(self.session_key):
-            response = self.http.post("auth/token/refresh")
+            response = self.http.post("auth/token/refresh", headers=self._outgoing_headers())
             if response.status_code == 401:
                 self.login()
                 return
@@ -467,10 +494,18 @@ class YydsClient:
             raise _http_error(payload, response.status_code, "yyds 请求失败", response.headers)
         return _unwrap(payload, status_code=response.status_code)
 
-    def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        headers = dict(kwargs.pop("headers", {}) or {})
+    def _outgoing_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = dict(extra or {})
+        origin = request_origin(self.api_base)
+        if origin:
+            headers.setdefault("Origin", origin)
+            headers.setdefault("Referer", origin.rstrip("/") + "/")
         if self.access_token:
             headers.setdefault("Authorization", f"Bearer {self.access_token}")
+        return headers
+
+    def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        headers = self._outgoing_headers(kwargs.pop("headers", None))
         url = path.lstrip("/")
         return self.http.request(method.upper(), url, headers=headers, **kwargs)
 

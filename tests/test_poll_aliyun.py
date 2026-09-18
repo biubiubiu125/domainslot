@@ -319,6 +319,90 @@ def test_error_first_snapshot_becomes_used_when_ready(db_session, settings, monk
     assert row.error_reason is None
 
 
+def test_yyds_fill_error_stays_when_first_snapshot_aliyun_ready(db_session, settings, monkeypatch):
+    now = datetime.now(timezone.utc)
+    account = AliyunAccount(
+        name="ak1",
+        access_key_id="LTAIxxxx",
+        access_key_secret_enc="enc",
+        enabled=True,
+        first_synced_at=now,
+    )
+    db_session.add(account)
+    db_session.flush()
+    row = Domain(
+        name="brzw.asia",
+        display_name="brzw.asia",
+        aliyun_account_id=account.id,
+        status=STATUS_ERROR,
+        from_first_snapshot=True,
+        error_reason="yyds 加域名失败: cross_origin_request_blocked HTTP 403",
+        nameservers="dns9.hichina.com",
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    class FakeClient:
+        def list_domains(self):
+            return [
+                AliyunDomain(
+                    name="brzw.asia",
+                    domain_status="3",
+                    audit_status="SUCCEED",
+                    nameservers=["dns9.hichina.com"],
+                )
+            ]
+
+    monkeypatch.setattr("app.worker.poll_aliyun.aliyun_client", lambda _settings, _account: FakeClient())
+    poll_one_aliyun_account(db_session, settings, account)
+    db_session.commit()
+    db_session.refresh(row)
+    assert row.status == STATUS_ERROR
+    assert row.error_reason == "yyds 加域名失败: cross_origin_request_blocked HTTP 403"
+
+
+def test_yyds_fill_error_stays_when_new_domain_aliyun_ready(db_session, settings, monkeypatch):
+    now = datetime.now(timezone.utc)
+    account = AliyunAccount(
+        name="ak1",
+        access_key_id="LTAIxxxx",
+        access_key_secret_enc="enc",
+        enabled=True,
+        first_synced_at=now,
+    )
+    db_session.add(account)
+    db_session.flush()
+    row = Domain(
+        name="new.com",
+        display_name="new.com",
+        aliyun_account_id=account.id,
+        status=STATUS_ERROR,
+        from_first_snapshot=False,
+        error_reason="yyds 加域名失败: cross_origin_request_blocked HTTP 403",
+        nameservers="dns9.hichina.com",
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    class FakeClient:
+        def list_domains(self):
+            return [
+                AliyunDomain(
+                    name="new.com",
+                    domain_status="3",
+                    audit_status="SUCCEED",
+                    nameservers=["dns9.hichina.com"],
+                )
+            ]
+
+    monkeypatch.setattr("app.worker.poll_aliyun.aliyun_client", lambda _settings, _account: FakeClient())
+    poll_one_aliyun_account(db_session, settings, account)
+    db_session.commit()
+    db_session.refresh(row)
+    assert row.status == STATUS_ERROR
+    assert "403" in (row.error_reason or "")
+
+
 def test_first_sync_client_hold_from_describe_marks_error(db_session, settings, monkeypatch):
     from sqlalchemy import select
 

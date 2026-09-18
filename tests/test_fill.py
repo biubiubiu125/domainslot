@@ -768,6 +768,28 @@ def test_add_domain_409_not_listed_marks_error(db_session, settings, monkeypatch
     assert "409" in (domain.error_reason or "")
 
 
+def test_add_domain_403_marks_yyds_add_failure(db_session, settings, monkeypatch):
+    _aliyun, _yyds, domain = _seed(db_session)
+    fake_yyds = FakeYyds()
+
+    def add_domain(name: str, enable_wildcard: bool = True):
+        fake_yyds.added.append(name)
+        raise YydsError("cross_origin_request_blocked HTTP 403", 403, {"errorCode": "cross_origin_request_blocked"})
+
+    fake_yyds.add_domain = add_domain  # type: ignore[method-assign]
+    dns = FakeAliyun()
+    monkeypatch.setattr("app.worker.fill.yyds_client", lambda *_a, **_k: fake_yyds)
+    monkeypatch.setattr("app.worker.fill.aliyun_client", lambda *_a, **_k: dns)
+    monkeypatch.setattr("app.worker.fill.persist_yyds_session", lambda *_a, **_k: None)
+    fill_available(db_session, settings)
+    db_session.refresh(domain)
+    assert fake_yyds.added == ["new.com"]
+    assert dns.applied == []
+    assert domain.status == STATUS_ERROR
+    assert domain.yyds_domain_id is None
+    assert domain.error_reason == "yyds 加域名失败: cross_origin_request_blocked HTTP 403"
+
+
 def test_repair_skips_when_live_registrar_redeemed(db_session, settings, monkeypatch):
     _aliyun, yyds, domain = _seed(db_session)
     domain.status = STATUS_ERROR

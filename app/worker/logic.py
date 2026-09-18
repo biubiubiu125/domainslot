@@ -9,6 +9,26 @@ STATUS_USED = "used"
 STATUS_ERROR = "error"
 USER_STATUSES = (STATUS_UNUSED, STATUS_USED, STATUS_ERROR)
 
+_ALIYUN_READINESS_MARKERS = (
+    "ClientHold",
+    "赎回",
+    "域名状态异常",
+    "无法读取实名审核状态",
+    "未实名",
+    "审核未通过",
+    "无法读取注册商 NS",
+    "NS 不是阿里云",
+    "阿里云列表中已不存在",
+    "阿里云接口限流",
+)
+
+
+def aliyun_readiness_error(reason: str | None) -> bool:
+    text = (reason or "").strip()
+    if not text:
+        return False
+    return any(marker in text for marker in _ALIYUN_READINESS_MARKERS)
+
 
 def assign_discovered_status(account_has_completed_first_sync: bool) -> str:
     return STATUS_UNUSED if account_has_completed_first_sync else STATUS_USED

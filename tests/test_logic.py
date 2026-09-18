@@ -17,6 +17,7 @@ from app.worker.logic import (
     AccountView,
     DomainView,
     aliyun_account_due,
+    aliyun_readiness_error,
     aliyun_throttle_backoff,
     assign_discovered_status,
     diff_domain_sets,
@@ -39,6 +40,17 @@ from app.worker.logic import (
 def test_first_sync_marks_used():
     assert assign_discovered_status(False) == STATUS_USED
     assert assign_discovered_status(True) == STATUS_UNUSED
+
+
+def test_aliyun_readiness_error_classifies_reasons():
+    assert aliyun_readiness_error("域名处于赎回状态") is True
+    assert aliyun_readiness_error("未实名或审核未通过: NONAUDIT") is True
+    assert aliyun_readiness_error("NS 不是阿里云: ns1.example.com") is True
+    assert aliyun_readiness_error("域名处于 ClientHold") is True
+    assert aliyun_readiness_error("阿里云列表中已不存在") is True
+    assert aliyun_readiness_error("yyds 加域名失败: cross_origin_request_blocked HTTP 403") is False
+    assert aliyun_readiness_error("yyds 返回 409，域名可能仍绑在别人或删除未完成") is False
+    assert aliyun_readiness_error(None) is False
 
 
 def test_yyds_removed_keeps_used():

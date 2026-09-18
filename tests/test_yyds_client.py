@@ -741,3 +741,64 @@ def test_list_domains_rejects_envelope_total_mismatch():
             client.list_domains()
     finally:
         client.close()
+
+
+def test_request_origin_uses_vip_console_for_official_api():
+    from app.yyds.client import request_origin
+
+    assert request_origin("https://maliapi.215.im/v1") == "https://vip.215.im"
+    assert request_origin("https://maliapi.215.im/v1/") == "https://vip.215.im"
+    assert request_origin("https://example.invalid/v1") == "https://example.invalid"
+
+
+def test_login_sends_console_origin_for_official_api():
+    captured: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["origin"] = request.headers.get("origin")
+        captured["referer"] = request.headers.get("referer")
+        return httpx.Response(200, json={"success": True, "data": {"access_token": "t"}})
+
+    client = YydsClient("https://maliapi.215.im/v1", "u", "p")
+    client.http.close()
+    client.http = httpx.Client(
+        base_url="https://maliapi.215.im/v1/",
+        transport=httpx.MockTransport(handler),
+        headers={"Accept": "application/json"},
+        follow_redirects=True,
+    )
+    try:
+        client.login()
+    finally:
+        client.close()
+    assert captured["origin"] == "https://vip.215.im"
+    assert captured["referer"] == "https://vip.215.im/"
+
+
+def test_add_domain_sends_console_origin_for_official_api():
+    origins: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        origins.append((request.method, request.headers.get("origin")))
+        path = request.url.path.rstrip("/")
+        if path.endswith("/me") or path.endswith("me"):
+            return httpx.Response(200, json={"success": True, "data": {"id": "u"}})
+        if request.method == "POST" and path.endswith("/me/domains"):
+            return httpx.Response(201, json={"success": True, "data": {"id": "yd1", "domain": "a.com"}})
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    client = YydsClient("https://maliapi.215.im/v1", "u", "p")
+    client.http.close()
+    client.http = httpx.Client(
+        base_url="https://maliapi.215.im/v1/",
+        transport=httpx.MockTransport(handler),
+        headers={"Accept": "application/json"},
+        follow_redirects=True,
+    )
+    client.access_token = "tok"
+    try:
+        client.add_domain("a.com")
+    finally:
+        client.close()
+    assert ("POST", "https://vip.215.im") in origins
+    assert all(origin == "https://vip.215.im" for _method, origin in origins)

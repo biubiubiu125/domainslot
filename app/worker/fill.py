@@ -656,7 +656,13 @@ def _bind_and_verify(
                     created = client.add_domain(domain.name, enable_wildcard=True)
                 except YydsError as exc:
                     if exc.status_code != 409:
-                        raise
+                        raise YydsError(
+                            f"yyds 加域名失败: {exc}",
+                            status_code=exc.status_code,
+                            payload=exc.payload,
+                            retry_after_seconds=exc.retry_after_seconds,
+                            code=exc.code,
+                        ) from exc
                     existing = find_listed_domain(client.list_domains(), domain.name)
                     if existing is None:
                         raise YydsError(
