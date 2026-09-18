@@ -271,6 +271,14 @@ def _invalid_body() -> YydsError:
     )
 
 
+def _state_required() -> YydsError:
+    return YydsError(
+        "wildcard_rule_state_required HTTP 400",
+        400,
+        {"success": False, "errorCode": "wildcard_rule_state_required"},
+    )
+
+
 def _patch_kwargs_are_query_and_json_state(kwargs: dict) -> bool:
     return (
         kwargs.get("params") == {"state": "active"}
@@ -284,6 +292,14 @@ def _patch_kwargs_are_query_and_empty_json(kwargs: dict) -> bool:
         kwargs.get("params") == {"state": "active"}
         and kwargs.get("json") == {}
         and "data" not in kwargs
+    )
+
+
+def _patch_kwargs_are_query_and_form_state(kwargs: dict) -> bool:
+    return (
+        kwargs.get("params") == {"state": "active"}
+        and kwargs.get("data") == {"state": "active"}
+        and "json" not in kwargs
     )
 
 
@@ -538,6 +554,110 @@ def test_enable_wildcard_rules_sends_state_query_on_the_wire():
     assert (patch.headers.get("content-type") or "").startswith("application/json")
     rule_gets = [item for item in captured if item.method == "GET" and item.url.path.endswith("/wildcard-rules")]
     assert len(rule_gets) == 2
+
+
+def test_enable_wildcard_rules_falls_back_to_form_when_state_required():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+    state = {"value": "draft"}
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET":
+            return [{"id": "r1", "state": state["value"], "pattern": "*.a.com"}]
+        if method == "PATCH" and _patch_kwargs_are_query_and_json_state(kwargs):
+            raise _state_required()
+        if method == "PATCH" and _patch_kwargs_are_query_and_empty_json(kwargs):
+            raise _state_required()
+        if method == "PATCH" and _patch_kwargs_are_query_and_form_state(kwargs):
+            state["value"] = "active"
+            return None
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    patch_calls = [item for item in calls if item[0] == "PATCH"]
+    assert any(_patch_kwargs_are_query_and_json_state(item[2]) for item in patch_calls)
+    assert _patch_kwargs_are_query_and_form_state(patch_calls[-1][2])
+    assert calls[-1][:2] == ("GET", "me/domains/yd1/wildcard-rules")
+
+
+def test_enable_wildcard_rules_falls_back_to_form_when_json_body_rejected():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+    state = {"value": "draft"}
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET":
+            return [{"id": "r1", "state": state["value"], "pattern": "*.a.com"}]
+        if method == "PATCH" and "json" in kwargs:
+            raise _invalid_body()
+        if method == "PATCH" and _patch_kwargs_are_query_and_form_state(kwargs):
+            state["value"] = "active"
+            return None
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    patch_calls = [item for item in calls if item[0] == "PATCH"]
+    assert all("json" in item[2] for item in patch_calls[:-1])
+    assert _patch_kwargs_are_query_and_form_state(patch_calls[-1][2])
+
+
+def test_enable_wildcard_rules_sends_form_state_on_the_wire_after_state_required():
+    captured: list[httpx.Request] = []
+    patched = {"ok": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/me"):
+            return httpx.Response(200, json={"success": True, "data": {"id": "u1"}})
+        if request.method == "GET" and path.endswith("/wildcard-rules"):
+            state = "active" if patched["ok"] else "draft"
+            return httpx.Response(
+                200,
+                json={"success": True, "data": [{"id": "r1", "state": state, "pattern": "*.a.com"}]},
+            )
+        if request.method == "PATCH" and path.endswith("/wildcard-rules/r1"):
+            content_type = request.headers.get("content-type") or ""
+            if content_type.startswith("application/json"):
+                return httpx.Response(
+                    400,
+                    json={"success": False, "errorCode": "wildcard_rule_state_required"},
+                )
+            if "application/x-www-form-urlencoded" in content_type:
+                assert request.url.params.get("state") == "active"
+                assert request.content == b"state=active"
+                patched["ok"] = True
+                return httpx.Response(204)
+            return httpx.Response(500, json={"success": False, "errorCode": "unexpected-ct", "ct": content_type})
+        return httpx.Response(500, json={"success": False, "errorCode": "unexpected", "path": path})
+
+    client = _client()
+    client.access_token = "tok"
+    client.http.close()
+    client.http = httpx.Client(
+        base_url=client.api_base,
+        transport=httpx.MockTransport(handler),
+        headers={"Accept": "application/json"},
+    )
+    try:
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    patch_calls = [item for item in captured if item.method == "PATCH"]
+    assert len(patch_calls) >= 2
+    assert (patch_calls[-1].headers.get("content-type") or "").startswith("application/x-www-form-urlencoded")
+    assert patch_calls[-1].content == b"state=active"
+    assert patch_calls[-1].url.params.get("state") == "active"
 
 
 def test_delete_domain_sends_delete():

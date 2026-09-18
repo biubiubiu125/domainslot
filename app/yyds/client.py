@@ -144,8 +144,9 @@ def _wildcard_error_blob(exc: YydsError) -> str:
     return " ".join(parts).lower()
 
 
-def _is_wildcard_rule_invalid_body(exc: YydsError) -> bool:
-    return "invalid_request_body" in _wildcard_error_blob(exc)
+def _is_wildcard_rule_retryable_payload(exc: YydsError) -> bool:
+    blob = _wildcard_error_blob(exc)
+    return "invalid_request_body" in blob or "wildcard_rule_state_required" in blob
 
 
 def assert_list_complete(payload: Any) -> None:
@@ -688,19 +689,22 @@ class YydsClient:
 
     def _set_wildcard_rule_active(self, domain_id: str, rule_id: str) -> None:
         # 生产对照：JSON-only {"state":"active"} -> wildcard_rule_state_required
-        # query-only 无 body -> invalid_request_body。state 走 query，同时必须带 JSON body。
-        # body 被拒时再试空对象；PATCH 200 仍以 GET 为准。
+        # query-only 无 body -> invalid_request_body。error 文案是「缺少...状态参数」，
+        # 与 OAuth state 同类，JSON 字段读不到。JSON 被拒或缺 state 时再发 form。
+        # PATCH 200 仍以 GET 为准。
         path = f"me/domains/{domain_id}/wildcard-rules/{rule_id}"
         last_error: YydsError | None = None
         saw_accepted = False
+        query = {"state": "active"}
         for kwargs in (
-            {"params": {"state": "active"}, "json": {"state": "active"}},
-            {"params": {"state": "active"}, "json": {}},
+            {"params": query, "json": {"state": "active"}},
+            {"params": query, "json": {}},
+            {"params": query, "data": {"state": "active"}},
         ):
             try:
                 self.request("PATCH", path, **kwargs)
             except YydsError as exc:
-                if not _is_wildcard_rule_invalid_body(exc):
+                if not _is_wildcard_rule_retryable_payload(exc):
                     raise
                 last_error = exc
                 continue
