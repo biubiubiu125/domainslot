@@ -136,6 +136,14 @@ def _is_auth_expired(exc: YydsError) -> bool:
     return exc.status_code == 401
 
 
+def _is_wildcard_rule_state_required(exc: YydsError) -> bool:
+    parts = [str(exc), str(exc.code or "")]
+    payload = exc.payload
+    if isinstance(payload, dict):
+        parts.extend(str(payload.get(key) or "") for key in ("errorCode", "error", "code"))
+    return "wildcard_rule_state_required" in " ".join(parts).lower()
+
+
 def assert_list_complete(payload: Any) -> None:
     if not isinstance(payload, dict):
         return
@@ -664,13 +672,40 @@ class YydsClient:
             rule_id = wildcard_rule_id(rule)
             if not rule_id:
                 raise YydsError("泛子域名规则缺少 id")
-            self.request(
-                "PATCH",
-                f"me/domains/{domain_id}/wildcard-rules/{rule_id}",
-                json={"state": "active"},
-            )
+            self._set_wildcard_rule_active(domain_id, rule_id)
             enabled_ids.append(rule_id)
         return enabled_ids
+
+    def _wildcard_rule_active_on_domain(self, domain_id: str, rule_id: str) -> bool:
+        for rule in self.list_domain_wildcard_rules(domain_id):
+            if wildcard_rule_id(rule) == str(rule_id):
+                return wildcard_rule_is_active(rule)
+        return False
+
+    def _set_wildcard_rule_active(self, domain_id: str, rule_id: str) -> None:
+        # OpenAPI 这条 PATCH 没有 requestBody。生产上 JSON {"state":"active"}
+        # 会 400 wildcard_rule_state_required，说明服务端没从 JSON 读到 state，
+        # 不再拿这个已知失败体去打 4xx。先 query，再 form；PATCH 200 仍以 GET 为准。
+        path = f"me/domains/{domain_id}/wildcard-rules/{rule_id}"
+        last_error: YydsError | None = None
+        saw_accepted = False
+        for kwargs in (
+            {"params": {"state": "active"}},
+            {"data": {"state": "active"}},
+        ):
+            try:
+                self.request("PATCH", path, **kwargs)
+            except YydsError as exc:
+                if not _is_wildcard_rule_state_required(exc):
+                    raise
+                last_error = exc
+                continue
+            saw_accepted = True
+            if self._wildcard_rule_active_on_domain(domain_id, rule_id):
+                return
+        if last_error is not None and not saw_accepted:
+            raise last_error
+        raise YydsError("yyds 启用规则后仍未生效", code="WILDCARD_RULE_NOT_ACTIVE")
 
     def verify_ready(self, payload: Any) -> tuple[bool, str]:
         data = payload
