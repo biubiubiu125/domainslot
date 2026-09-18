@@ -39,7 +39,6 @@ from app.worker.logic import (
 from app.yyds.client import YydsError, extract_quota, find_listed_domain
 
 RETRY_RESULTS = {"dns_propagating", "txt_missing", "mx_missing", "wildcard_mx_missing"}
-_WILDCARD_ENABLE_RETRY_CODES = {"wildcard_rule_mx_not_ready", "wildcard_dns_refresh_pending"}
 
 
 def _now() -> datetime:
@@ -52,15 +51,6 @@ def _aware(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
-
-
-def _wildcard_enable_retryable(exc: YydsError) -> bool:
-    parts = [str(exc), str(exc.code or "")]
-    payload = exc.payload
-    if isinstance(payload, dict):
-        parts.extend(str(payload.get(key) or "") for key in ("errorCode", "error", "message", "code"))
-    blob = " ".join(parts).lower()
-    return any(code in blob for code in _WILDCARD_ENABLE_RETRY_CODES)
 
 
 def fill_available(session: Session, settings: Settings, prefer_yyds_id: str | None = None) -> bool:
@@ -790,25 +780,7 @@ def _write_dns_and_verify(
             payload = yyds.dns_status(domain_id)
         ready, last_reason = yyds.verify_ready(payload)
         if ready:
-            try:
-                yyds.enable_wildcard_rules(domain_id)
-                persist_yyds_session(settings, account, yyds)
-                return
-            except YydsError as exc:
-                if exc.status_code == 429:
-                    persist_yyds_session(settings, account, yyds)
-                    raise
-                if _wildcard_enable_retryable(exc):
-                    last_reason = "wildcard_mx_missing"
-                else:
-                    persist_yyds_session(settings, account, yyds)
-                    raise YydsError(
-                        f"yyds 启用规则失败: {exc}",
-                        status_code=exc.status_code,
-                        payload=exc.payload,
-                        retry_after_seconds=exc.retry_after_seconds,
-                        code=exc.code,
-                    ) from exc
+            return
         if last_reason not in RETRY_RESULTS:
             raise RuntimeError(f"yyds 验证失败: {last_reason}")
         if attempt >= attempts - 1:

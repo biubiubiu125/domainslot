@@ -136,19 +136,6 @@ def _is_auth_expired(exc: YydsError) -> bool:
     return exc.status_code == 401
 
 
-def _wildcard_error_blob(exc: YydsError) -> str:
-    parts = [str(exc), str(exc.code or "")]
-    payload = exc.payload
-    if isinstance(payload, dict):
-        parts.extend(str(payload.get(key) or "") for key in ("errorCode", "error", "code"))
-    return " ".join(parts).lower()
-
-
-def _is_wildcard_rule_retryable_payload(exc: YydsError) -> bool:
-    blob = _wildcard_error_blob(exc)
-    return "invalid_request_body" in blob or "wildcard_rule_state_required" in blob
-
-
 def assert_list_complete(payload: Any) -> None:
     if not isinstance(payload, dict):
         return
@@ -330,23 +317,6 @@ def find_listed_domain(items: list[YydsDomain], name: str) -> YydsDomain | None:
         if domains_match(item.domain, name):
             return item
     return None
-
-
-def wildcard_rule_id(rule: dict[str, Any]) -> str:
-    return str(rule.get("id") or rule.get("ruleId") or "").strip()
-
-
-def wildcard_rule_is_active(rule: dict[str, Any]) -> bool:
-    state = str(rule.get("state") or rule.get("status") or rule.get("ruleState") or "").strip().lower()
-    if state in {"active", "enabled", "running"}:
-        return True
-    if state in {"draft", "paused", "pending", "disabled", "inactive", "prepared"}:
-        return False
-    if rule.get("enabled") is True or rule.get("isEnabled") is True:
-        return True
-    if rule.get("paused") is True or rule.get("isPaused") is True:
-        return False
-    return False
 
 
 _OFFICIAL_CONSOLE_ORIGINS = {
@@ -653,67 +623,6 @@ class YydsClient:
             if try_as_list(existing):
                 return True
             raise YydsError("通配规则冲突且列表里没有该规则", 409, exc.payload) from exc
-
-    def list_domain_wildcard_rules(self, domain_id: str) -> list[dict[str, Any]]:
-        payload = self.request("GET", f"me/domains/{domain_id}/wildcard-rules")
-        assert_list_complete(payload)
-        return [item for item in try_as_list(payload) if isinstance(item, dict)]
-
-    def enable_wildcard_rules(self, domain_id: str) -> list[str]:
-        rules = self.list_domain_wildcard_rules(domain_id)
-        if not rules:
-            try:
-                self.request("POST", f"me/domains/{domain_id}/wildcard-rules")
-            except YydsError as exc:
-                if exc.status_code != 409:
-                    raise
-            rules = self.list_domain_wildcard_rules(domain_id)
-        if not rules:
-            raise YydsError("没有可启用的泛子域名规则")
-        enabled_ids: list[str] = []
-        for rule in rules:
-            if wildcard_rule_is_active(rule):
-                continue
-            rule_id = wildcard_rule_id(rule)
-            if not rule_id:
-                raise YydsError("泛子域名规则缺少 id")
-            self._set_wildcard_rule_active(domain_id, rule_id)
-            enabled_ids.append(rule_id)
-        return enabled_ids
-
-    def _wildcard_rule_active_on_domain(self, domain_id: str, rule_id: str) -> bool:
-        for rule in self.list_domain_wildcard_rules(domain_id):
-            if wildcard_rule_id(rule) == str(rule_id):
-                return wildcard_rule_is_active(rule)
-        return False
-
-    def _set_wildcard_rule_active(self, domain_id: str, rule_id: str) -> None:
-        # 生产对照：JSON-only {"state":"active"} -> wildcard_rule_state_required
-        # query-only 无 body -> invalid_request_body。error 文案是「缺少...状态参数」，
-        # 与 OAuth state 同类，JSON 字段读不到。JSON 被拒或缺 state 时再发 form。
-        # PATCH 200 仍以 GET 为准。
-        path = f"me/domains/{domain_id}/wildcard-rules/{rule_id}"
-        last_error: YydsError | None = None
-        saw_accepted = False
-        query = {"state": "active"}
-        for kwargs in (
-            {"params": query, "json": {"state": "active"}},
-            {"params": query, "json": {}},
-            {"params": query, "data": {"state": "active"}},
-        ):
-            try:
-                self.request("PATCH", path, **kwargs)
-            except YydsError as exc:
-                if not _is_wildcard_rule_retryable_payload(exc):
-                    raise
-                last_error = exc
-                continue
-            saw_accepted = True
-            if self._wildcard_rule_active_on_domain(domain_id, rule_id):
-                return
-        if last_error is not None and not saw_accepted:
-            raise last_error
-        raise YydsError("yyds 启用规则后仍未生效", code="WILDCARD_RULE_NOT_ACTIVE")
 
     def verify_ready(self, payload: Any) -> tuple[bool, str]:
         data = payload

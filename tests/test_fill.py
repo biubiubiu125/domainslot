@@ -49,6 +49,7 @@ def _seed(session, *, domain_status="3", audit="SUCCEED", nameservers="dns9.hich
 class FakeYyds:
     def __init__(self):
         self.added = []
+        self.ensured = []
         self.enabled = []
         self.access_token = "t"
         self._domains: dict[str, YydsDomain] = {}
@@ -85,11 +86,11 @@ class FakeYyds:
         return True
 
     def ensure_wildcard_rule(self, domain_id: str) -> bool:
+        self.ensured.append(domain_id)
         return True
 
     def enable_wildcard_rules(self, domain_id: str) -> list[str]:
-        self.enabled.append(domain_id)
-        return ["r1"]
+        raise AssertionError("fill must not auto-enable wildcard rules")
 
     def dns_guide(self, domain_id: str):
         return {
@@ -795,7 +796,7 @@ def test_add_domain_403_marks_yyds_add_failure(db_session, settings, monkeypatch
     assert domain.error_reason == "yyds 加域名失败: cross_origin_request_blocked HTTP 403"
 
 
-def test_fill_enables_wildcard_rule_after_verify(db_session, settings, monkeypatch):
+def test_fill_creates_wildcard_rule_without_enabling(db_session, settings, monkeypatch):
     _aliyun, _yyds, domain = _seed(db_session)
     fake_yyds = FakeYyds()
     dns = FakeAliyun()
@@ -806,67 +807,10 @@ def test_fill_enables_wildcard_rule_after_verify(db_session, settings, monkeypat
     db_session.refresh(domain)
     assert fake_yyds.added == ["new.com"]
     assert dns.applied != []
-    assert fake_yyds.enabled == ["yd1"]
+    assert fake_yyds.ensured == ["yd1"]
+    assert fake_yyds.enabled == []
     assert domain.status == STATUS_USED
     assert domain.error_reason is None
-
-
-def test_fill_retries_enable_when_wildcard_mx_not_ready(db_session, settings, monkeypatch):
-    settings.verify_attempts = 2
-    settings.verify_retry_seconds = 0
-    _aliyun, _yyds, domain = _seed(db_session)
-    fake_yyds = FakeYyds()
-    calls = {"n": 0}
-
-    def enable(domain_id: str):
-        fake_yyds.enabled.append(domain_id)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise YydsError(
-                "wildcard_rule_mx_not_ready HTTP 400",
-                400,
-                {"errorCode": "wildcard_rule_mx_not_ready"},
-            )
-        return ["r1"]
-
-    fake_yyds.enable_wildcard_rules = enable  # type: ignore[method-assign]
-    monkeypatch.setattr("app.worker.fill.yyds_client", lambda *_a, **_k: fake_yyds)
-    monkeypatch.setattr("app.worker.fill.aliyun_client", lambda *_a, **_k: FakeAliyun())
-    monkeypatch.setattr("app.worker.fill.persist_yyds_session", lambda *_a, **_k: None)
-    fill_available(db_session, settings)
-    db_session.refresh(domain)
-    assert fake_yyds.added == ["new.com"]
-    assert fake_yyds.enabled == ["yd1", "yd1"]
-    assert domain.status == STATUS_USED
-    assert domain.error_reason is None
-
-
-def test_fill_enable_rule_failure_marks_error(db_session, settings, monkeypatch):
-    _aliyun, _yyds, domain = _seed(db_session)
-    fake_yyds = FakeYyds()
-
-    def enable(domain_id: str):
-        fake_yyds.enabled.append(domain_id)
-        raise YydsError(
-            "wildcard_rule_update_failed HTTP 500",
-            500,
-            {"errorCode": "wildcard_rule_update_failed"},
-        )
-
-    fake_yyds.enable_wildcard_rules = enable  # type: ignore[method-assign]
-    dns = FakeAliyun()
-    monkeypatch.setattr("app.worker.fill.yyds_client", lambda *_a, **_k: fake_yyds)
-    monkeypatch.setattr("app.worker.fill.aliyun_client", lambda *_a, **_k: dns)
-    monkeypatch.setattr("app.worker.fill.persist_yyds_session", lambda *_a, **_k: None)
-    fill_available(db_session, settings)
-    db_session.refresh(domain)
-    assert fake_yyds.added == ["new.com"]
-    assert dns.applied != []
-    assert fake_yyds.enabled == ["yd1"]
-    assert domain.status == STATUS_ERROR
-    assert domain.yyds_domain_id == "yd1"
-    assert "启用规则失败" in (domain.error_reason or "")
-    assert "wildcard_rule_update_failed" in (domain.error_reason or "")
 
 
 def test_repair_skips_when_live_registrar_redeemed(db_session, settings, monkeypatch):
