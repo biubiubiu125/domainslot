@@ -35,6 +35,24 @@ def test_panel_has_no_yyds_domain_delete_button():
     assert "used_wildcard == null" in js or "used_wildcard === null" in js
 
 
+def test_account_dialogs_cancel_without_validation_and_disable_autofill():
+    html = (ROOT / "app/web/static/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "app/web/static/app.js").read_text(encoding="utf-8")
+    assert html.count('data-close-dialog') >= 2
+    assert 'type="submit" value="cancel"' not in html
+    assert 'autocomplete="off"' in html
+    assert 'autocomplete="new-password"' in html
+    assert 'data-no-autofill' in html
+    assert 'data-close-dialog' in js
+    assert 'autocomplete="current-password"' in html
+
+
+def test_yyds_account_chips_do_not_duplicate_receive_closed():
+    js = (ROOT / "app/web/static/app.js").read_text(encoding="utf-8")
+    assert 'chip("接收已关"' in js
+    assert '!item.receive_enabled ? "接收已关"' not in js
+
+
 def test_compose_database_url_can_use_env():
     text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "DATABASE_URL: ${DATABASE_URL:-" in text

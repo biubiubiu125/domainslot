@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -36,15 +37,92 @@ def _is_throttle(code: str | None, message: str) -> bool:
     return "throttl" in blob or "flowcontrol" in blob or "serviceunavailable" in blob
 
 
+def _unwrap_dict_message(raw: str) -> str:
+    text = (raw or "").strip()
+    if not (text.startswith("{") and "message" in text.lower()):
+        return text
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
+    if isinstance(parsed, dict):
+        inner = parsed.get("Message") or parsed.get("message")
+        if inner:
+            return str(inner)
+    return text
+
+
+def _exception_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    data = getattr(exc, "data", None)
+    if isinstance(data, dict):
+        for key in ("Message", "message"):
+            value = data.get(key)
+            if value:
+                parts.append(str(value))
+    for attr in ("message", "msg"):
+        value = getattr(exc, attr, None)
+        if value:
+            parts.append(str(value))
+    inner = getattr(exc, "inner_exception", None)
+    if isinstance(inner, BaseException):
+        parts.append(_exception_text(inner))
+    parts.append(str(exc))
+    return "\n".join(part for part in parts if part)
+
+
+def _preferred_raw_message(exc: BaseException) -> str:
+    data = getattr(exc, "data", None)
+    if isinstance(data, dict):
+        for key in ("Message", "message"):
+            value = data.get(key)
+            if value:
+                return str(value)
+    inner = getattr(exc, "inner_exception", None)
+    if isinstance(inner, BaseException):
+        inner_msg = _preferred_raw_message(inner)
+        if inner_msg:
+            return inner_msg
+    value = getattr(exc, "message", None)
+    if value:
+        return str(value)
+    return str(exc)
+
+
+def _network_aliyun_message(message: str, code: str | None = None) -> str | None:
+    blob = f"{code or ''} {message}".lower()
+    if any(token in blob for token in ("connect timeout", "connecttimeouterror", "connecttimeout")):
+        return "连接阿里云超时"
+    if any(token in blob for token in ("read timeout", "readtimeouterror", "readtimeout")):
+        return "读取阿里云响应超时"
+    if any(
+        token in blob
+        for token in (
+            "max retries exceeded",
+            "failed to establish a new connection",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "connection refused",
+            "connection aborted",
+        )
+    ):
+        return "无法连接到阿里云"
+    return None
+
+
 def _tea_error(exc: TeaException) -> AliyunError:
     code = None
-    message = str(exc)
-    if getattr(exc, "data", None) and isinstance(exc.data, dict):
-        code = str(exc.data.get("Code") or exc.data.get("code") or "")
-        message = str(exc.data.get("Message") or exc.data.get("message") or message)
-    elif getattr(exc, "code", None):
-        code = str(exc.code)
-    return AliyunError(message, code=code, throttled=_is_throttle(code, message))
+    data = getattr(exc, "data", None)
+    if isinstance(data, dict):
+        code = str(data.get("Code") or data.get("code") or "") or None
+    if not code and getattr(exc, "code", None):
+        code = str(exc.code) or None
+    if code in {"None", "none"}:
+        code = None
+    raw = _exception_text(exc)
+    preferred = _unwrap_dict_message(_preferred_raw_message(exc))
+    message = _network_aliyun_message(raw, code) or preferred or str(exc)
+    return AliyunError(message, code=code, throttled=_is_throttle(code, raw))
 
 
 def _int_field(value: Any, *names: str) -> int | None:
@@ -179,8 +257,8 @@ class AliyunDomain:
 
 
 class AliyunClient:
-    CONNECT_TIMEOUT = 10
-    READ_TIMEOUT = 30
+    CONNECT_TIMEOUT = 10000
+    READ_TIMEOUT = 30000
 
     def __init__(self, access_key_id: str, access_key_secret: str):
         domain_config = open_api_models.Config(

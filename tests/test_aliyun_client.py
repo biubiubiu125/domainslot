@@ -1,6 +1,8 @@
 import pytest
 
-from app.aliyun.client import AliyunClient, AliyunDomain, AliyunError
+from Tea.exceptions import RetryError, TeaException, UnretryableException
+
+from app.aliyun.client import AliyunClient, AliyunDomain, AliyunError, _tea_error
 
 
 def _request_name(request_factory) -> str:
@@ -223,12 +225,61 @@ def test_list_records_uses_total_count_even_if_short_page():
     assert pages == [1, 2]
 
 
-def test_aliyun_client_sets_sdk_timeouts():
+def test_aliyun_client_sets_sdk_timeouts_in_milliseconds():
     client = AliyunClient("ak", "sk")
-    assert client.domain_api._connect_timeout == 10
-    assert client.domain_api._read_timeout == 30
-    assert client.dns_api._connect_timeout == 10
-    assert client.dns_api._read_timeout == 30
+    assert AliyunClient.CONNECT_TIMEOUT == 10000
+    assert AliyunClient.READ_TIMEOUT == 30000
+    assert client.domain_api._connect_timeout == 10000
+    assert client.domain_api._read_timeout == 30000
+    assert client.dns_api._connect_timeout == 10000
+    assert client.dns_api._read_timeout == 30000
+
+
+def test_tea_error_maps_connect_timeout_to_chinese():
+    exc = TeaException(
+        {
+            "message": (
+                "HTTPSConnectionPool(host='domain.aliyuncs.com', port=443): "
+                "Max retries exceeded with url: /?PageNum=1&PageSize=50 "
+                "(Caused by ConnectTimeoutError(<HTTPSConnectionPool(host='domain.aliyuncs.com', port=443)>, "
+                "'Connection to domain.aliyuncs.com timed out. (connect timeout=0.01)'))"
+            )
+        }
+    )
+    err = _tea_error(exc)
+    assert str(err) == "连接阿里云超时"
+    assert err.throttled is False
+
+
+def test_tea_error_maps_retry_error_connect_timeout():
+    inner = RetryError(
+        "Connection to domain.aliyuncs.com timed out. (connect timeout=0.01)"
+    )
+    err = _tea_error(UnretryableException(object(), inner))
+    assert str(err) == "连接阿里云超时"
+
+
+def test_tea_error_unwraps_retry_error_without_class_prefix():
+    inner = RetryError("SSL: CERTIFICATE_VERIFY_FAILED")
+    err = _tea_error(UnretryableException(object(), inner))
+    assert str(err) == "SSL: CERTIFICATE_VERIFY_FAILED"
+    assert "RetryError" not in str(err)
+
+
+def test_tea_error_keeps_aliyun_api_message():
+    exc = TeaException(
+        {
+            "code": "InvalidAccessKeyId.NotFound",
+            "message": "Specified access key is not found.",
+            "data": {
+                "Code": "InvalidAccessKeyId.NotFound",
+                "Message": "Specified access key is not found.",
+            },
+        }
+    )
+    err = _tea_error(exc)
+    assert str(err) == "Specified access key is not found."
+    assert err.code == "InvalidAccessKeyId.NotFound"
 
 
 def test_apply_guide_keeps_matching_wanted_records(monkeypatch):

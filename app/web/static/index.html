@@ -9,6 +9,7 @@
 <body>
   <div id="login-view" class="login-wrap hidden">
     <form id="login-form" class="card login-card">
+      <div class="brand-mark" aria-hidden="true">DS</div>
       <h1>yyds邮箱域名监测</h1>
       <p class="muted">输入面板密码后开始看库存、空位和补位日志。</p>
       <label>面板密码
@@ -21,9 +22,12 @@
 
   <div id="app-view" class="hidden">
     <header class="topbar">
-      <div>
-        <h1>yyds邮箱域名监测</h1>
-        <p class="muted" id="version-line"></p>
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">DS</div>
+        <div>
+          <h1>yyds邮箱域名监测</h1>
+          <p class="muted" id="version-line"></p>
+        </div>
       </div>
       <div class="top-actions">
         <button type="button" id="scan-btn">立即扫描</button>
@@ -34,27 +38,31 @@
     <section id="alerts" class="alerts"></section>
 
     <section class="stats">
-      <article class="card stat"><span>未使用</span><strong id="stat-unused">0</strong></article>
-      <article class="card stat"><span>已使用</span><strong id="stat-used">0</strong></article>
-      <article class="card stat"><span>异常</span><strong id="stat-error">0</strong></article>
-      <article class="card stat"><span>工作线程</span><strong id="stat-worker">-</strong></article>
+      <article class="card stat unused"><span>未使用</span><strong id="stat-unused">0</strong></article>
+      <article class="card stat used"><span>已使用</span><strong id="stat-used">0</strong></article>
+      <article class="card stat error"><span>异常</span><strong id="stat-error">0</strong></article>
+      <article class="card stat worker"><span>工作线程</span><strong id="stat-worker">-</strong></article>
     </section>
 
     <section class="grid">
       <article class="card">
         <div class="card-head">
-          <h2>yyds 账号</h2>
+          <div>
+            <h2>yyds 账号</h2>
+            <p class="muted">只监测和补位。域名删除请去 yyds 官网，这里没有删除按钮。</p>
+          </div>
           <button type="button" data-open="yyds-form">添加账号</button>
         </div>
-        <p class="muted">只监测和补位。域名删除请去 yyds 官网，这里没有删除按钮。</p>
         <div id="yyds-list" class="stack"></div>
       </article>
       <article class="card">
         <div class="card-head">
-          <h2>阿里云账号</h2>
+          <div>
+            <h2>阿里云账号</h2>
+            <p class="muted">域名列表和写解析都会打到域名所属的这一把 AccessKey。</p>
+          </div>
           <button type="button" data-open="aliyun-form">添加账号</button>
         </div>
-        <p class="muted">域名列表和写解析都会打到域名所属的这一把 AccessKey。</p>
         <div id="aliyun-list" class="stack"></div>
       </article>
     </section>
@@ -96,35 +104,43 @@
   </div>
 
   <dialog id="aliyun-form" class="dialog">
-    <form method="dialog" class="dialog-form">
+    <form method="dialog" class="dialog-form" autocomplete="off">
+      <div class="autofill-trap" aria-hidden="true">
+        <input type="text" tabindex="-1" autocomplete="username">
+        <input type="password" tabindex="-1" autocomplete="current-password">
+      </div>
       <h3 id="aliyun-form-title">添加阿里云账号</h3>
       <input type="hidden" name="id">
-      <label>名称 <input name="name" required></label>
-      <label>AccessKey ID <input name="access_key_id" placeholder="修改时留空表示不改"></label>
-      <label>AccessKey Secret <input name="access_key_secret" placeholder="修改时留空表示不改"></label>
+      <label>名称 <input name="name" required autocomplete="off" spellcheck="false"></label>
+      <label>AccessKey ID <input name="access_key_id" placeholder="修改时留空表示不改" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-no-autofill readonly></label>
+      <label>AccessKey Secret <input name="access_key_secret" placeholder="修改时留空表示不改" autocomplete="new-password" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-no-autofill readonly></label>
       <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
       <p class="error" data-form-error hidden></p>
       <menu>
-        <button type="submit" value="cancel" class="ghost">取消</button>
+        <button type="button" class="ghost" data-close-dialog>取消</button>
         <button type="submit" value="save">保存</button>
       </menu>
     </form>
   </dialog>
 
   <dialog id="yyds-form" class="dialog">
-    <form method="dialog" class="dialog-form">
+    <form method="dialog" class="dialog-form" autocomplete="off">
+      <div class="autofill-trap" aria-hidden="true">
+        <input type="text" tabindex="-1" autocomplete="username">
+        <input type="password" tabindex="-1" autocomplete="current-password">
+      </div>
       <h3 id="yyds-form-title">添加 yyds 账号</h3>
       <input type="hidden" name="id">
-      <label>名称 <input name="name" required></label>
-      <label>用户名 <input name="username" required></label>
-      <label>密码 <input type="password" name="password" placeholder="修改时留空表示不改"></label>
-      <label>一次性二验码（可选） <input name="twofa_code" autocomplete="one-time-code" placeholder="账号开了 2FA 时再填，用一次就清"></label>
+      <label>名称 <input name="name" required autocomplete="off" spellcheck="false"></label>
+      <label>用户名 <input name="username" required autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-no-autofill readonly></label>
+      <label>密码 <input type="password" name="password" placeholder="修改时留空表示不改" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-no-autofill readonly></label>
+      <label>一次性二验码（可选） <input name="twofa_code" autocomplete="one-time-code" inputmode="numeric" placeholder="账号开了 2FA 时再填，用一次就清"></label>
       <label>补位顺序 <input type="number" name="sort_order" value="100"></label>
       <label class="check"><input type="checkbox" name="receive_enabled" checked> 接收新域名</label>
       <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
       <p class="error" data-form-error hidden></p>
       <menu>
-        <button type="submit" value="cancel" class="ghost">取消</button>
+        <button type="button" class="ghost" data-close-dialog>取消</button>
         <button type="submit" value="save">保存</button>
       </menu>
     </form>

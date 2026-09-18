@@ -59,6 +59,16 @@ function accountButtons(kind, item) {
     </div>`;
 }
 
+function lockAutofill(root) {
+  root.querySelectorAll("input[data-no-autofill]").forEach((input) => {
+    input.setAttribute("readonly", "readonly");
+  });
+}
+
+function chip(text, kind) {
+  return `<span class="chip${kind ? ` ${kind}` : ""}">${escapeHtml(text)}</span>`;
+}
+
 function renderOverview(data) {
   overviewCache = data;
   document.getElementById("version-line").textContent = `版本 ${data.version} · 工作线程 ${data.worker.alive === "yes" ? "运行中" : "未运行"}`;
@@ -67,24 +77,42 @@ function renderOverview(data) {
   document.getElementById("stat-error").textContent = data.error;
   document.getElementById("stat-worker").textContent = data.worker.alive === "yes" ? "正常" : "停止";
   alertsEl.innerHTML = (data.alerts || []).map((item) => `<div class="alert">${escapeHtml(item)}</div>`).join("");
-  document.getElementById("yyds-list").innerHTML = data.yyds.map((item) => `
-    <div class="account">
+  document.getElementById("yyds-list").innerHTML = data.yyds.map((item) => {
+    const quotaUnknown = item.max_wildcard == null || item.used_wildcard == null || item.used_wildcard < 0;
+    const slotHint = quotaUnknown ? "配额未知" : (item.wildcard_full ? "已满" : "有空位");
+    return `
+    <div class="account${item.login_error ? " is-error" : ""}">
       <b>${escapeHtml(item.name)}</b>
       <div class="muted">${escapeHtml(item.username)} · 套餐 ${escapeHtml(item.plan_name || "未知")} · 顺序 ${item.sort_order}</div>
-      <div>泛解析 ${quotaText(item.used_wildcard, item.max_wildcard)} ${item.max_wildcard == null || item.used_wildcard == null || item.used_wildcard < 0 ? "· 配额未知" : (!item.receive_enabled ? "· 接收已关" : (item.wildcard_full ? "· 已满" : "· 有空位"))}</div>
-      <div>自定义域名 ${quotaText(item.used_domains, item.max_domains)}</div>
-      <div>接收新域名：${item.receive_enabled ? "开" : "关"} · 登录：${item.login_error ? "失败" : "正常"}${item.throttle_until ? " · 限流中" : ""}</div>
-      ${item.login_error ? `<div class="error">${escapeHtml(item.login_error)}</div>` : ""}
+      <div class="chips">
+        ${item.enabled ? chip("启用", "ok") : chip("停用", "muted")}
+        ${item.login_error ? chip("登录失败", "bad") : chip("登录正常", "ok")}
+        ${item.receive_enabled ? chip("接收新域名") : chip("接收已关", "muted")}
+        ${chip(slotHint, item.wildcard_full || quotaUnknown ? "warn" : "ok")}
+        ${item.throttle_until ? chip("限流中", "warn") : ""}
+      </div>
+      <div class="account-metrics">
+        <div><span>泛解析</span><strong>${quotaText(item.used_wildcard, item.max_wildcard)}</strong></div>
+        <div><span>自定义域名</span><strong>${quotaText(item.used_domains, item.max_domains)}</strong></div>
+      </div>
+      ${item.login_error ? `<div class="error-box">${escapeHtml(item.login_error)}</div>` : ""}
       <div class="pills">${(item.domains || []).map((name) => `<span class="pill">${escapeHtml(name)}</span>`).join("") || '<span class="muted">当前没有绑定域名</span>'}</div>
       ${accountButtons("yyds", item)}
-    </div>`).join("") || '<p class="muted">还没有 yyds 账号</p>';
+    </div>`;
+  }).join("") || '<p class="muted">还没有 yyds 账号</p>';
   document.getElementById("aliyun-list").innerHTML = data.aliyun.map((item) => `
-    <div class="account">
+    <div class="account${item.last_error ? " is-error" : ""}">
       <b>${escapeHtml(item.name)}</b>
       <div class="muted">${escapeHtml(item.access_key_id_masked)}</div>
-      <div>启用：${item.enabled ? "是" : "否"} · 首次对账：${item.first_synced_at || "未开始"}</div>
-      <div>上次成功：${item.last_success_at || "-"}</div>
-      ${item.last_error ? `<div class="error">${escapeHtml(item.last_error)}</div>` : ""}
+      <div class="chips">
+        ${item.enabled ? chip("启用", "ok") : chip("停用", "muted")}
+        ${item.first_synced_at ? chip("已对账", "ok") : chip("首次对账未开始", "warn")}
+      </div>
+      <div class="account-metrics">
+        <div><span>首次对账</span><strong>${escapeHtml(item.first_synced_at || "未开始")}</strong></div>
+        <div><span>上次成功</span><strong>${escapeHtml(item.last_success_at || "-")}</strong></div>
+      </div>
+      ${item.last_error ? `<div class="error-box">${escapeHtml(item.last_error)}</div>` : ""}
       ${accountButtons("aliyun", item)}
     </div>`).join("") || '<p class="muted">还没有阿里云账号</p>';
 }
@@ -162,6 +190,12 @@ document.getElementById("scan-btn").addEventListener("click", async () => {
 statusFilter.addEventListener("change", () => renderDomains(domainsCache));
 
 document.body.addEventListener("click", async (event) => {
+  const closeDialog = event.target.closest("[data-close-dialog]");
+  if (closeDialog) {
+    const dialog = closeDialog.closest("dialog");
+    if (dialog) dialog.close();
+    return;
+  }
   const openId = event.target.getAttribute("data-open");
   if (openId) {
     const dialog = document.getElementById(openId);
@@ -169,6 +203,7 @@ document.body.addEventListener("click", async (event) => {
     dialog.querySelector("[name=id]").value = "";
     const err = dialog.querySelector("[data-form-error]");
     if (err) { err.hidden = true; err.textContent = ""; }
+    lockAutofill(dialog);
     dialog.showModal();
     return;
   }
@@ -216,13 +251,21 @@ function fillForm(id, item) {
   form.elements.enabled.checked = item.enabled;
   const err = form.querySelector("[data-form-error]");
   if (err) { err.hidden = true; err.textContent = ""; }
+  lockAutofill(dialog);
   dialog.showModal();
 }
 
 function bindDialog(id, endpoint) {
   const dialog = document.getElementById(id);
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("focusin", (event) => {
+    if (event.target && event.target.hasAttribute && event.target.hasAttribute("data-no-autofill")) {
+      event.target.removeAttribute("readonly");
+    }
+  });
   dialog.querySelector("form").addEventListener("submit", async (event) => {
-    if (event.submitter && event.submitter.value === "cancel") return;
     event.preventDefault();
     const form = event.target;
     const errorBox = form.querySelector("[data-form-error]");
