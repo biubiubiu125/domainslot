@@ -263,6 +263,118 @@ def test_ensure_wildcard_409_with_existing_rule_ok():
     assert gets["n"] >= 2
 
 
+def test_enable_wildcard_rules_patches_active_state():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET" and path == "me/domains/yd1/wildcard-rules":
+            return [{"id": "r1", "state": "draft", "pattern": "*.a.com"}]
+        if method == "PATCH" and path == "me/domains/yd1/wildcard-rules/r1":
+            return {"id": "r1", "state": "active"}
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    assert calls[0][:2] == ("GET", "me/domains/yd1/wildcard-rules")
+    assert calls[1][:2] == ("PATCH", "me/domains/yd1/wildcard-rules/r1")
+    assert calls[1][2].get("json") == {"state": "active"}
+
+
+def test_enable_wildcard_rules_skips_already_active():
+    client = _client()
+    calls: list[str] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append(method)
+        if method == "GET":
+            return [{"id": "r1", "state": "active", "pattern": "*.a.com"}]
+        raise AssertionError("active rule must not PATCH")
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == []
+    finally:
+        client.close()
+    assert calls == ["GET"]
+
+
+def test_enable_wildcard_rules_creates_draft_then_enables():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+    created = {"done": False}
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET" and path == "me/domains/yd1/wildcard-rules":
+            if created["done"]:
+                return [{"id": "r1", "state": "draft", "pattern": "*.a.com"}]
+            return []
+        if method == "POST" and path == "me/domains/yd1/wildcard-rules":
+            created["done"] = True
+            return {"id": "r1", "state": "draft"}
+        if method == "PATCH" and path == "me/domains/yd1/wildcard-rules/r1":
+            return {"id": "r1", "state": "active"}
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    assert [item[:2] for item in calls] == [
+        ("GET", "me/domains/yd1/wildcard-rules"),
+        ("POST", "me/domains/yd1/wildcard-rules"),
+        ("GET", "me/domains/yd1/wildcard-rules"),
+        ("PATCH", "me/domains/yd1/wildcard-rules/r1"),
+    ]
+    assert "json" not in calls[1][2]
+    assert calls[-1][2].get("json") == {"state": "active"}
+
+
+def test_enable_wildcard_rules_enables_paused():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET":
+            return [{"id": "r1", "state": "paused", "pauseReason": "user_paused"}]
+        if method == "PATCH":
+            return {"id": "r1", "state": "active"}
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.enable_wildcard_rules("yd1") == ["r1"]
+    finally:
+        client.close()
+    assert calls[-1][:2] == ("PATCH", "me/domains/yd1/wildcard-rules/r1")
+    assert calls[-1][2].get("json") == {"state": "active"}
+
+
+def test_delete_domain_sends_delete():
+    client = _client()
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "DELETE" and path == "me/domains/yd1":
+            return {"ok": True}
+        raise AssertionError((method, path, kwargs))
+
+    try:
+        client.request = fake_request  # type: ignore[method-assign]
+        assert client.delete_domain("yd1") == {"ok": True}
+    finally:
+        client.close()
+    assert calls == [("DELETE", "me/domains/yd1", {})]
+
+
 def test_as_list_reads_wildcard_rules_key():
     assert _as_list({"wildcardRules": [{"id": "r1"}, {"id": "r2"}]}) == [{"id": "r1"}, {"id": "r2"}]
     assert _as_list({"items": [], "wildcardRules": [{"id": "r1"}]}) == [{"id": "r1"}]

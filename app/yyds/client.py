@@ -319,6 +319,23 @@ def find_listed_domain(items: list[YydsDomain], name: str) -> YydsDomain | None:
     return None
 
 
+def wildcard_rule_id(rule: dict[str, Any]) -> str:
+    return str(rule.get("id") or rule.get("ruleId") or "").strip()
+
+
+def wildcard_rule_is_active(rule: dict[str, Any]) -> bool:
+    state = str(rule.get("state") or rule.get("status") or rule.get("ruleState") or "").strip().lower()
+    if state in {"active", "enabled", "running"}:
+        return True
+    if state in {"draft", "paused", "pending", "disabled", "inactive", "prepared"}:
+        return False
+    if rule.get("enabled") is True or rule.get("isEnabled") is True:
+        return True
+    if rule.get("paused") is True or rule.get("isPaused") is True:
+        return False
+    return False
+
+
 _OFFICIAL_CONSOLE_ORIGINS = {
     "maliapi.215.im": "https://vip.215.im",
 }
@@ -568,6 +585,10 @@ class YydsClient:
         )
         return payload if isinstance(payload, dict) else {"raw": payload}
 
+    def delete_domain(self, domain_id: str) -> dict[str, Any]:
+        payload = self.request("DELETE", f"me/domains/{domain_id}")
+        return payload if isinstance(payload, dict) else {"raw": payload}
+
     def dns_guide(self, domain_id: str) -> Any:
         return self.request("GET", f"me/domains/{domain_id}/dns-guide")
 
@@ -619,6 +640,37 @@ class YydsClient:
             if try_as_list(existing):
                 return True
             raise YydsError("通配规则冲突且列表里没有该规则", 409, exc.payload) from exc
+
+    def list_domain_wildcard_rules(self, domain_id: str) -> list[dict[str, Any]]:
+        payload = self.request("GET", f"me/domains/{domain_id}/wildcard-rules")
+        assert_list_complete(payload)
+        return [item for item in try_as_list(payload) if isinstance(item, dict)]
+
+    def enable_wildcard_rules(self, domain_id: str) -> list[str]:
+        rules = self.list_domain_wildcard_rules(domain_id)
+        if not rules:
+            try:
+                self.request("POST", f"me/domains/{domain_id}/wildcard-rules")
+            except YydsError as exc:
+                if exc.status_code != 409:
+                    raise
+            rules = self.list_domain_wildcard_rules(domain_id)
+        if not rules:
+            raise YydsError("没有可启用的泛子域名规则")
+        enabled_ids: list[str] = []
+        for rule in rules:
+            if wildcard_rule_is_active(rule):
+                continue
+            rule_id = wildcard_rule_id(rule)
+            if not rule_id:
+                raise YydsError("泛子域名规则缺少 id")
+            self.request(
+                "PATCH",
+                f"me/domains/{domain_id}/wildcard-rules/{rule_id}",
+                json={"state": "active"},
+            )
+            enabled_ids.append(rule_id)
+        return enabled_ids
 
     def verify_ready(self, payload: Any) -> tuple[bool, str]:
         data = payload

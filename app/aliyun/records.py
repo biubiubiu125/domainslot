@@ -24,6 +24,14 @@ class WantedRecord:
     priority: int | None = None
 
 
+def mailbox_cleanup_wanted() -> list[WantedRecord]:
+    return [
+        WantedRecord("TXT", "_yydsmail-verify", ""),
+        WantedRecord("MX", "@", "", 10),
+        WantedRecord("MX", "*", "", 10),
+    ]
+
+
 def aliyun_nameservers_ok(nameservers: list[str] | None) -> bool:
     if not nameservers:
         return False

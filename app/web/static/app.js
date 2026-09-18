@@ -133,6 +133,8 @@ function renderDomains(rows) {
       <td class="row-actions">
         <button type="button" class="ghost" data-status="${item.id}:unused">改未使用</button>
         <button type="button" class="ghost" data-status="${item.id}:used">改已使用</button>
+        ${item.yyds_domain_id && !item.filling ? `<button type="button" class="danger" data-del-yyds-domain="${item.id}">从 yyds 删除</button>` : ""}
+        ${!item.yyds_domain_id && !item.filling && String(item.error_reason || "").includes("阿里云解析清理失败") ? `<button type="button" class="danger" data-del-yyds-domain="${item.id}">重试清理解析</button>` : ""}
       </td>
     </tr>`).join("") || '<tr><td colspan="7" class="muted">暂无域名</td></tr>';
 }
@@ -224,6 +226,18 @@ document.body.addEventListener("click", async (event) => {
   if (editAliyun) {
     const item = overviewCache.aliyun.find((row) => row.id === editAliyun);
     fillForm("aliyun-form", item);
+    return;
+  }
+  const delYydsDomain = event.target.getAttribute("data-del-yyds-domain");
+  if (delYydsDomain) {
+    if (confirm("会从 yyds 删除该域名（若还在），并删除阿里云上对应的邮箱解析（验证 TXT、根域 MX、通配 MX，以及根域/通配冲突 A/CNAME）。本地点已使用、未绑定，不会立刻再补这条。确定？")) {
+      try {
+        await api(`/api/domains/${delYydsDomain}/yyds`, { method: "DELETE" });
+        await refresh();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err || "删除失败"));
+      }
+    }
     return;
   }
   const delYyds = event.target.getAttribute("data-del-yyds");

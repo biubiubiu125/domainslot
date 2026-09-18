@@ -93,6 +93,12 @@ def increment_known_occupancy(current: int | None) -> int:
     return int(current) + 1
 
 
+def decrement_known_occupancy(current: int | None) -> int:
+    if current is None or current < 0:
+        return -1
+    return max(0, int(current) - 1)
+
+
 def first_snapshot_names(names_json: str | None) -> set[str] | None:
     if names_json is None:
         return None

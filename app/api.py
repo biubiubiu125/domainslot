@@ -18,6 +18,7 @@ from app.db.session import db_session
 from app.domainutil import display_domain, normalize_domain
 from app.security import LoginGate
 from app.worker.events import redact
+from app.worker.delete_yyds import YydsDomainDeleteError, delete_bound_yyds_domain
 from app.worker.fill import _domain_views
 from app.worker.logic import (
     ALIYUN_EMPTY_LIST_WARNING,
@@ -439,6 +440,18 @@ def update_domain(domain_id: UUID, body: DomainStatusBody, session: Session = De
         if not occupied:
             row.yyds_account_id = None
             row.yyds_domain_id = None
+    request_scan()
+    return _domain_dict(row)
+
+
+@router.delete("/api/domains/{domain_id}/yyds")
+def delete_domain_from_yyds(
+    domain_id: UUID, session: Session = Depends(get_db), _: AdminAuth = Depends(require_login)
+):
+    try:
+        row = delete_bound_yyds_domain(session, get_settings(), domain_id)
+    except YydsDomainDeleteError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     request_scan()
     return _domain_dict(row)
 

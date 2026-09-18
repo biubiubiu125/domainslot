@@ -12,7 +12,7 @@ from alibabacloud_domain20180129 import models as domain_models
 from alibabacloud_tea_openapi import models as open_api_models
 from Tea.exceptions import TeaException
 
-from app.aliyun.records import WantedRecord, aliyun_nameservers_ok, is_conflict_record
+from app.aliyun.records import WantedRecord, aliyun_nameservers_ok, is_conflict_record, mailbox_cleanup_wanted
 
 
 class AliyunError(Exception):
@@ -535,6 +535,16 @@ class AliyunClient:
             self.add_record(domain, item)
             added += 1
         return {"deleted": deleted, "added": added}
+
+    def delete_mailbox_records(self, domain: str, wanted: list[WantedRecord] | None = None) -> dict[str, int]:
+        records = self.list_records(domain)
+        wanted = list(wanted or mailbox_cleanup_wanted())
+        deleted = 0
+        for record in records:
+            if is_conflict_record(record["rr"], record["type"], wanted) and record["record_id"]:
+                self.delete_record(record["record_id"])
+                deleted += 1
+        return {"deleted": deleted}
 
 
 def _client_hold_from(raw: Any) -> bool:

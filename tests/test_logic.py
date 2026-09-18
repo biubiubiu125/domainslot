@@ -494,7 +494,7 @@ def test_yyds_snapshot_unreliable_shorter_list_without_quota():
 
 
 def test_stored_occupancy_keeps_unknown():
-    from app.worker.logic import increment_known_occupancy, occupancy_unknown, stored_occupancy
+    from app.worker.logic import decrement_known_occupancy, increment_known_occupancy, occupancy_unknown, stored_occupancy
 
     assert stored_occupancy(-1) == -1
     assert stored_occupancy(None) == 0
@@ -504,6 +504,11 @@ def test_stored_occupancy_keeps_unknown():
     assert increment_known_occupancy(None) == -1
     assert increment_known_occupancy(0) == 1
     assert increment_known_occupancy(4) == 5
+    assert decrement_known_occupancy(-1) == -1
+    assert decrement_known_occupancy(None) == -1
+    assert decrement_known_occupancy(0) == 0
+    assert decrement_known_occupancy(1) == 0
+    assert decrement_known_occupancy(4) == 3
     assert occupancy_unknown(-1, -1) is True
     assert occupancy_unknown(-1, 0) is False
     assert occupancy_unknown(None, 0) is True

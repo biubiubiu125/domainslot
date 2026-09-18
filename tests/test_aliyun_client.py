@@ -312,3 +312,31 @@ def test_apply_guide_keeps_matching_wanted_records(monkeypatch):
     assert added == []
     assert result["deleted"] == 1
     assert result["added"] == 0
+
+
+def test_delete_mailbox_records_removes_conflicts_keeps_www(monkeypatch):
+    from app.aliyun.records import WantedRecord
+
+    client = AliyunClient("ak", "sk")
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        client,
+        "list_records",
+        lambda domain: [
+            {"record_id": "1", "rr": "@", "type": "MX", "value": "mx.215.im", "priority": 10},
+            {"record_id": "2", "rr": "*", "type": "MX", "value": "mx.215.im", "priority": 10},
+            {"record_id": "3", "rr": "_yydsmail-verify", "type": "TXT", "value": "tok", "priority": None},
+            {"record_id": "4", "rr": "@", "type": "A", "value": "1.2.3.4", "priority": None},
+            {"record_id": "5", "rr": "www", "type": "A", "value": "1.2.3.4", "priority": None},
+            {"record_id": "6", "rr": "@", "type": "NS", "value": "dns9.hichina.com", "priority": None},
+        ],
+    )
+    monkeypatch.setattr(client, "delete_record", lambda rid: deleted.append(rid))
+    wanted = [
+        WantedRecord("TXT", "_yydsmail-verify", "tok"),
+        WantedRecord("MX", "@", "mx.215.im", 10),
+        WantedRecord("MX", "*", "mx.215.im", 10),
+    ]
+    result = client.delete_mailbox_records("new.com", wanted)
+    assert deleted == ["1", "2", "3", "4"]
+    assert result["deleted"] == 4
